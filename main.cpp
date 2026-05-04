@@ -22,8 +22,8 @@ const int ADC1_PINS[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
 const int NUM_ADC1_PINS = 10;
 
 const int SAMPLING_RATE_HZ = 2000;
-// 4000 Hz = 250 µs periyot (FreeRTOS tick 1ms olduğu için vTaskDelayUntil kullanılamaz)
-const int64_t SAMPLE_PERIOD_US = 1000000 / SAMPLING_RATE_HZ; // 250 µs
+// 2000 Hz = 500 µs periyot (FreeRTOS tick 1ms olduğu için vTaskDelayUntil kullanılamaz)
+const int64_t SAMPLE_PERIOD_US = 1000000 / SAMPLING_RATE_HZ; // 500 µs
 
 // Görevler (Tasks) arası güvenli veri taşıma kuyruğu
 QueueHandle_t emgQueue;
@@ -36,9 +36,9 @@ struct EMGData {
 // ==========================================
 // --- 50 Hz NOTCH FİLTRE (Şebeke Gürültüsü Temizleme) ---
 // ==========================================
-// 2. derece IIR Notch Filtre - 50 Hz @ 4000 Hz örnekleme
+// 2. derece IIR Notch Filtre - 50 Hz @ 2000 Hz örnekleme
 // H(z) = (1 - 2cos(w0)z^-1 + z^-2) / (1 - 2r*cos(w0)z^-1 + r^2*z^-2)
-// w0 = 2*PI*50/4000, r = 0.95 (dar çentik)
+// w0 = 2*PI*50/2000, r = 0.95 (dar çentik)
 
 const float NOTCH_FREQ = 50.0;
 const float NOTCH_R = 0.95; // Çentik genişliği (1'e yakın = daha dar)
@@ -89,7 +89,7 @@ void adcTask(void *pvParameters) {
         
         xQueueSend(emgQueue, &data, 0);
 
-        // Mikrosaniye hassasiyetinde zamanlama (4000 Hz = 250 µs periyot)
+        // Mikrosaniye hassasiyetinde zamanlama (2000 Hz = 500 µs periyot)
         nextSampleTime += SAMPLE_PERIOD_US;
         int64_t now = esp_timer_get_time();
         if (nextSampleTime > now) {
