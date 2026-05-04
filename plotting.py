@@ -4,13 +4,16 @@ import numpy as np
 import pyqtgraph as pg
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import QTimer
+import time
+import csv
 
 # ==========================================
 # 1. AYARLAR
 # ==========================================
 SERIAL_PORT = '/dev/cu.usbmodem1101'
 BAUD_RATE = 115200
-MAX_POINTS = 300  # Ekranda görünecek maksimum nokta sayısı
+MAX_POINTS = 10000  # Ekranda görünecek maksimum nokta sayısı
+OUTPUT_FILE = 'emg_kayit_ch1.csv' # Kaydedilecek CSV dosyasının adı
 
 print(f"🔄 {SERIAL_PORT} portuna bağlanılıyor...")
 
@@ -22,6 +25,20 @@ except Exception as e:
     print("Kabloyu, port adını kontrol edin ve Serial Monitor'ün KAPALI olduğundan emin olun.")
     sys.exit()
 
+# CSV Dosyasını Oluştur ve Aç
+try:
+    csv_file = open(OUTPUT_FILE, mode='w', newline='')
+    csv_writer = csv.writer(csv_file)
+    csv_writer.writerow(['Zaman (sn)', 'Voltaj (V)']) # Başlıkları yaz
+    print(f"📁 Veriler aynı zamanda '{OUTPUT_FILE}' dosyasına kaydedilecek.")
+except Exception as e:
+    print(f"❌ Dosya oluşturma hatası: {e}")
+    ser.close()
+    sys.exit()
+
+# Başlangıç zamanını al
+start_time = time.time()
+
 # ==========================================
 # 2. GUI VE GRAFİK KURULUMU (PyQtGraph)
 # ==========================================
@@ -30,7 +47,7 @@ pg.setConfigOptions(antialias=True)
 
 win = pg.GraphicsLayoutWidget(show=True, title="Gerçek Zamanlı Tek Kanal EMG")
 win.resize(1000, 400)
-win.setWindowTitle('EMG Bionic Hand - Tek Kanal Osiloskop (GPIO 4)')
+win.setWindowTitle('EMG Bionic Hand - Tek Kanal Osiloskop ve Kaydedici')
 win.setBackground('#0f172a') 
 
 p = win.addPlot()
@@ -61,8 +78,12 @@ def update():
                 try:
                     raw_val = float(line_str)
                     
-                    # ESP32'den (GPIO 4) ne geliyorsa (0 bile olsa) direkt voltaja çevrilir ve çizilir.
+                    # ESP32'den ne geliyorsa direkt voltaja çevir
                     voltage_val = (raw_val / 4095.0) * 3.3
+                    
+                    # --- CSV'YE KAYDETME İŞLEMİ ---
+                    current_time = time.time() - start_time
+                    csv_writer.writerow([f"{current_time:.4f}", f"{voltage_val:.4f}"])
                     
                     # Veri tamponunu sola kaydır
                     data_buffer = np.roll(data_buffer, -1)
@@ -93,5 +114,10 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         print("\nÇizim durduruldu.")
     finally:
+        # Program kapatılırken portu ve dosyayı güvenle kapat
         ser.close()
-        print("Seri port kapatıldı.")
+        csv_file.close() 
+        print("---------------------------------------------------------")
+        print("🔌 Seri port kapatıldı.")
+        print(f"🎉 KAYIT TAMAMLANDI! Veriler '{OUTPUT_FILE}' dosyasına başarıyla kaydedildi.")
+        print("---------------------------------------------------------")

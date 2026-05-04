@@ -21,7 +21,7 @@ const int EMG_PIN = 4;  // Varsayılan pin - ADC1_CH3 (ESP32-S3)
 const int ADC1_PINS[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
 const int NUM_ADC1_PINS = 10;
 
-const int SAMPLING_RATE_HZ = 4000;
+const int SAMPLING_RATE_HZ = 2000;
 // 4000 Hz = 250 µs periyot (FreeRTOS tick 1ms olduğu için vTaskDelayUntil kullanılamaz)
 const int64_t SAMPLE_PERIOD_US = 1000000 / SAMPLING_RATE_HZ; // 250 µs
 
