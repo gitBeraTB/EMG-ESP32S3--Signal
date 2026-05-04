@@ -41,7 +41,7 @@ if not expected_cols.issubset(set(df.columns)):
         print("ERROR: No 'Label' column present. Cannot continue.")
         raise SystemExit
 
-print("\nLabel distribution (1=Rest, 2=Elbow, 3=Biceps):")
+print("\nLabel distribution (1=Rest, 2=Biceps, 3=Elbow):")
 print(df['Label'].value_counts())
 
 # ---------------------------------------------------------
@@ -87,7 +87,7 @@ print(f"Test accuracy: {clf.score(X_test, y_test) * 100:.2f}%")
 print("\n4. Evaluation report")
 y_pred = clf.predict(X_test)
 # Human‑readable class names
-class_names = {1: 'REST', 2: 'ELBOW', 3: 'BICEPS'}
+class_names = {1: 'REST', 2: 'BICEPS', 3: 'ELBOW'}
 unique_labels = np.unique(y)
 target_names = [class_names.get(l, str(l)) for l in unique_labels]
 print(classification_report(y_test, y_pred, target_names=target_names))

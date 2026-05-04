@@ -103,8 +103,8 @@ void serialTask(void *pvParameters) {
     EMGData data;
     for (;;) {
         if (xQueueReceive(emgQueue, &data, portMAX_DELAY) == pdPASS) {
-            // fill window
-            window_buffer[window_idx++] = (float)data.value;
+            // fill window (ADC -> volts to match training data scale)
+            window_buffer[window_idx++] = (float)data.value * 3.3f / 4095.0f;
             if (window_idx >= WINDOW_SIZE) {
                 // ----- feature extraction -----
                 float sum = 0, sum_sq = 0;
