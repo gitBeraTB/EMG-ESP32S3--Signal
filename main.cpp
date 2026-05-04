@@ -77,16 +77,28 @@ void adcTask(void *pvParameters) {
     EMGData data;
     int64_t nextSampleTime = esp_timer_get_time();
 
+    // DC Offset Takipçisi (Sinyali tam merkeze oturtmak için)
+    float dc_offset = 2047.0; 
+
     for (;;) {
         uint16_t rawVal = analogRead(EMG_PIN);
         
-        // 50 Hz notch filtre uygula
-        float filtered = applyNotchFilter((float)rawVal);
+        // 1. Çok yavaş bir High-Pass ile DC seviyesini bul (Sinyalin kaymasını engeller)
+        dc_offset = 0.999 * dc_offset + 0.001 * (float)rawVal;
         
-        // Filtrelenmiş değeri 0-4095 aralığına kırp
-        if (filtered < 0) filtered = 0;
-        if (filtered > 4095) filtered = 4095;
-        data.value = (uint16_t)filtered;
+        // 2. DC'yi sinyalden çıkar (Sadece AC kas sinyali kalır)
+        float ac_val = (float)rawVal - dc_offset;
+        
+        // 3. 50 Hz notch filtreyi SADECE AC sinyale uygula (Float hassasiyet hatasını çözer)
+        float filtered_ac = applyNotchFilter(ac_val);
+        
+        // 4. Sinyali tam olarak 1.65V (2047 raw ADC) merkezine geri taşı
+        float final_val = filtered_ac + 2047.0;
+        
+        // 5. Filtrelenmiş değeri 0-4095 aralığına kırp
+        if (final_val < 0) final_val = 0;
+        if (final_val > 4095) final_val = 4095;
+        data.value = (uint16_t)final_val;
         
         xQueueSend(emgQueue, &data, 0);
 
