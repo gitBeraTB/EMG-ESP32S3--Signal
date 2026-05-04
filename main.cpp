@@ -77,14 +77,14 @@ void adcTask(void *pvParameters) {
     int64_t nextSampleTime = esp_timer_get_time();
 
     for (;;) {
-        uint16_t rawVal = analogRead(EMG_PIN);
+        uint32_t rawVal = analogReadMilliVolts(EMG_PIN);
         
         // 50 Hz notch filtre uygula
         float filtered = applyNotchFilter((float)rawVal);
         
-        // Filtrelenmiş değeri 0-4095 aralığına kırp
+        // Filtrelenmiş değeri 0-3300 (mV) aralığına kırp
         if (filtered < 0) filtered = 0;
-        if (filtered > 4095) filtered = 4095;
+        if (filtered > 3300) filtered = 3300;
         data.value = (uint16_t)filtered;
         
         xQueueSend(emgQueue, &data, 0);
