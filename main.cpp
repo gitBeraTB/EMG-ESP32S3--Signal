@@ -43,13 +43,14 @@ struct EMGData {
 const float NOTCH_FREQ = 50.0;
 const float NOTCH_R = 0.95; // Çentik genişliği (1'e yakın = daha dar)
 
-// Ön-hesaplanmış katsayılar
-const float cosW0 = cos(2.0 * PI * NOTCH_FREQ / SAMPLING_RATE_HZ); // ~0.99692
-const float b0 = 1.0;
-const float b1 = -2.0 * cosW0;          // ~ -1.99384
-const float b2 = 1.0;
-const float a1 = -2.0 * NOTCH_R * cosW0; // ~ -1.89415
-const float a2 = NOTCH_R * NOTCH_R;      // ~ 0.9025
+// Ön-hesaplanmış katsayılar (DC Kazancını 1.0 yapmak için K0 faktörü eklendi)
+const float cosW0 = cos(2.0 * PI * NOTCH_FREQ / SAMPLING_RATE_HZ);
+const float K0 = (1.0 - 2.0 * NOTCH_R * cosW0 + NOTCH_R * NOTCH_R) / (2.0 - 2.0 * cosW0);
+const float b0 = K0;
+const float b1 = -2.0 * K0 * cosW0;
+const float b2 = K0;
+const float a1 = -2.0 * NOTCH_R * cosW0; 
+const float a2 = NOTCH_R * NOTCH_R;
 
 // Filtre bellek değişkenleri
 float x_prev1 = 0, x_prev2 = 0; // Giriş geçmişi
@@ -77,14 +78,14 @@ void adcTask(void *pvParameters) {
     int64_t nextSampleTime = esp_timer_get_time();
 
     for (;;) {
-        uint32_t rawVal = analogReadMilliVolts(EMG_PIN);
+        uint16_t rawVal = analogRead(EMG_PIN);
         
         // 50 Hz notch filtre uygula
         float filtered = applyNotchFilter((float)rawVal);
         
-        // Filtrelenmiş değeri 0-3300 (mV) aralığına kırp
+        // Filtrelenmiş değeri 0-4095 aralığına kırp
         if (filtered < 0) filtered = 0;
-        if (filtered > 3300) filtered = 3300;
+        if (filtered > 4095) filtered = 4095;
         data.value = (uint16_t)filtered;
         
         xQueueSend(emgQueue, &data, 0);
