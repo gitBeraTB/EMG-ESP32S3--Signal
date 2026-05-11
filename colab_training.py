@@ -41,13 +41,13 @@ if not expected_cols.issubset(set(df.columns)):
         print("ERROR: No 'Label' column present. Cannot continue.")
         raise SystemExit
 
-print("\nLabel distribution (1=Rest, 2=Biceps, 3=Elbow):")
+print("\nLabel distribution (1=Rest, 2=Biceps):")
 print(df['Label'].value_counts())
 
 # ---------------------------------------------------------
 print("\n2. Feature extraction (sliding window)...")
-WINDOW_SIZE = 50   # 50 samples ≈ 0.025 s at 2000 Hz
-STEP_SIZE   = 25   # 50 % overlap
+WINDOW_SIZE = 200  # 100 ms window
+STEP_SIZE   = 100  # 50 ms step
 
 features = []
 labels   = []
@@ -58,14 +58,17 @@ for label in df['Label'].unique():
     signal = df[df['Label'] == label]['Voltaj (V)'].values
     for start in range(0, len(signal) - WINDOW_SIZE + 1, STEP_SIZE):
         window = signal[start:start + WINDOW_SIZE]
-        # Time‑domain features (same as before)
         mean_val = np.mean(window)
-        std_val  = np.std(window)
-        var_val  = np.var(window)
-        rms_val  = np.sqrt(np.mean(window ** 2))
-        min_val  = np.min(window)
-        max_val  = np.max(window)
-        features.append([mean_val, std_val, var_val, rms_val, min_val, max_val])
+        window_centered = window - mean_val
+        
+        mav_val = np.mean(np.abs(window_centered))
+        std_val = np.std(window_centered)
+        var_val = np.var(window_centered)
+        wl_val  = np.sum(np.abs(np.diff(window)))
+        zcr_val = np.sum(np.diff(np.sign(window_centered)) != 0)
+        ssc_val = np.sum(np.diff(np.sign(np.diff(window))) != 0)
+        
+        features.append([mav_val, std_val, var_val, wl_val, zcr_val, ssc_val])
         labels.append(label)
 
 X = np.array(features)
@@ -73,11 +76,11 @@ y = np.array(labels)
 print("Feature matrix shape:", X.shape)
 
 # ---------------------------------------------------------
-print("\n3. Train Random Forest (max_depth=8)...")
+print("\n3. Train Random Forest (max_depth=12, quantized)...")
 X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.2, random_state=42, stratify=y)
 
-clf = RandomForestClassifier(n_estimators=100, max_depth=8, random_state=42)
+clf = RandomForestClassifier(n_estimators=150, max_depth=12, min_samples_split=5, random_state=42)
 clf.fit(X_train, y_train)
 
 print("Training completed.")
@@ -87,7 +90,7 @@ print(f"Test accuracy: {clf.score(X_test, y_test) * 100:.2f}%")
 print("\n4. Evaluation report")
 y_pred = clf.predict(X_test)
 # Human‑readable class names
-class_names = {1: 'REST', 2: 'BICEPS', 3: 'ELBOW'}
+class_names = {1: 'REST', 2: 'BICEPS'}
 unique_labels = np.unique(y)
 target_names = [class_names.get(l, str(l)) for l in unique_labels]
 print(classification_report(y_test, y_pred, target_names=target_names))
@@ -102,18 +105,31 @@ plt.title('Confusion matrix')
 plt.show()
 
 # ---------------------------------------------------------
-print("\n5. Export model to C++ header (quantization disabled)")
+print("\n5. Export model to C++ header")
 try:
     from micromlgen import port
-    from google.colab import files
-    c_code = port(clf, quantize=False)  # disable quantization to avoid ESP32 crashes
+    
+    # Generate C++ code (Quantization DISABLED because EMG features have tiny decimal values like 0.001)
+    c_code = port(clf, quantize=False) 
     model_file = 'model.h'
+    
     with open(model_file, 'w') as f:
         f.write(c_code)
-    print(f"Model header saved as '{model_file}'.")
-    files.download(model_file)
-    print("Download started – place 'model.h' into the PlatformIO src folder next to main.cpp.")
+    
+    print(f"✅ Model header '{model_file}' successfully created.")
+
+    # --- GOOGLE COLAB DOWNLOAD ---
+    try:
+        from google.colab import files
+        print("🚀 Downloading model.h to your computer...")
+        files.download(model_file)
+    except ImportError:
+        print("⚠️ Not running in Google Colab? You can find 'model.h' in the local folder.")
+    except Exception as e:
+        print(f"⚠️ Automatic download failed: {e}")
+        print("You can manually download it from the files sidebar on the left.")
+
 except ImportError:
-    print("ERROR: micromlgen not installed. Run '!pip install micromlgen' first.")
+    print("❌ ERROR: micromlgen not installed. Run this in a cell: !pip install micromlgen")
 except Exception as e:
-    print("ERROR while exporting model:", e)
+    print(f"❌ ERROR while exporting model: {e}")

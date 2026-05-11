@@ -18,7 +18,7 @@ from collections import deque
 
 # --------------------------- Konfigürasyon ---------------------------
 PORT = sys.argv[1] if len(sys.argv) > 1 else "/dev/cu.usbmodem1101"
-BAUD = 115200
+BAUD = 921600
 MAX_POINTS = 2000               # gösterilecek maksimum örnek sayısı
 # -------------------------------------------------------------------
 
@@ -37,9 +37,9 @@ line_pred, = ax_pred.plot([], [], lw=1, color="#f43f5e")
 ax_raw.set_ylabel("Raw ADC (0‑4095)")
 ax_raw.set_title("EMG Raw Signal")
 ax_raw.grid(True)
-ax_pred.set_ylabel("Tahmin (0/1000/2000)")
+ax_pred.set_ylabel("Tahmin (1000/2000)")
 ax_pred.set_xlabel("Örnek")
-ax_pred.set_title("Model Prediction (REST=0, BICEPS=1000, ELBOW=2000)")
+ax_pred.set_title("Model Prediction (REST=1000, BICEPS=2000)")
 ax_pred.grid(True)
 
 # Çizim güncelleme fonksiyonu
@@ -52,7 +52,8 @@ def update(frame):
         if line.startswith("Raw:"):
             parts = line.split(",")
             raw_part = parts[0].split(":")[1].strip()
-            pred_part = parts[1].split(":")[1].strip() if len(parts) > 1 else "0"
+            pred_full = parts[1].split(":")[1].strip() if len(parts) > 1 else "0"
+            pred_part = pred_full.split()[0] # "1000 // REST" -> "1000"
             raw_val = int(raw_part)
             pred_val = int(pred_part)
             raw_buf.append(raw_val)

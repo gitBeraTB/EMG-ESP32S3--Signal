@@ -11,18 +11,17 @@ import csv
 # 1. AYARLAR
 # ==========================================
 SERIAL_PORT = '/dev/cu.usbmodem1101'
-BAUD_RATE = 115200
+BAUD_RATE = 921600
 MAX_POINTS = 10000
 OUTPUT_FILE = 'emg_kayit_ch1.csv'
 
 # Etiket eslemesi
 # 1 = REST            ('1' basili tut)
-# 2 = ELBOW ROTATION  ('2' basili tut)
-# 3 = BICEPS          ('3' basili tut)
+# 2 = BICEPS          ('2' basili tut)
 # Tus yok = kayit yok (gecis anlarini etiketleme)
-LABELS = {'1': 1, '2': 2, '3': 3}
-LABEL_NAMES = {0: 'IDLE', 1: 'REST', 2: 'ELBOW ROT', 3: 'BICEPS'}
-LABEL_COLORS = {0: '#94a3b8', 1: '#22c55e', 2: '#3b82f6', 3: '#ef4444'}
+LABELS = {'1': 1, '2': 2}
+LABEL_NAMES = {0: 'IDLE', 1: 'REST', 2: 'BICEPS'}
+LABEL_COLORS = {0: '#94a3b8', 1: '#22c55e', 2: '#ef4444'}
 
 current_label = 0   # tus yok = idle, kayit yok
 active_keys = set()
@@ -53,8 +52,7 @@ print("-" * 50)
 print("ETIKETLEME (PLOT PENCERESI ODAKTA OLMALI):")
 print("  Tus yok        -> kayit yok (idle)")
 print("  '1' basili tut -> REST")
-print("  '2' basili tut -> ELBOW ROTATION")
-print("  '3' basili tut -> BICEPS")
+print("  '2' basili tut -> BICEPS")
 print("-" * 50)
 
 start_time = time.time()
@@ -97,8 +95,8 @@ win.setFocus()
 
 p = win.addPlot()
 p.setLabel('bottom', 'Ornekler (Samples)')
-p.setLabel('left', 'CH1: Sensor (V)', units='V')
-p.setYRange(0, 3.3, padding=0)
+p.setLabel('left', 'CH1: Sensor (Raw ADC)')
+p.setYRange(0, 4095, padding=0)
 p.setXRange(0, MAX_POINTS, padding=0)
 p.showGrid(x=True, y=True, alpha=0.3)
 
@@ -120,7 +118,7 @@ count_text.setFont(font2)
 p.addItem(count_text)
 
 data_buffer = np.zeros(MAX_POINTS)
-counts = {1: 0, 2: 0, 3: 0}
+counts = {1: 0, 2: 0}
 last_drawn_label = -1
 
 # ==========================================
@@ -143,7 +141,7 @@ def update():
                         csv_writer.writerow([f"{t:.4f}", f"{voltage_val:.4f}", current_label])
                         counts[current_label] += 1
                     data_buffer = np.roll(data_buffer, -1)
-                    data_buffer[-1] = voltage_val
+                    data_buffer[-1] = raw_val
                     has_new_data = True
                 except ValueError:
                     pass
@@ -159,7 +157,7 @@ def update():
             curve.setPen(pg.mkPen(LABEL_COLORS[current_label], width=2.5))
             last_drawn_label = current_label
         count_text.setText(
-            f"REST={counts[1]}  ELBOW={counts[2]}  BICEPS={counts[3]}"
+            f"REST={counts[1]}  BICEPS={counts[2]}"
         )
 
 timer = QTimer()
@@ -178,5 +176,5 @@ if __name__ == '__main__':
         ser.close()
         csv_file.close()
         print("-" * 50)
-        print(f"REST={counts[1]}  ELBOW={counts[2]}  BICEPS={counts[3]}")
+        print(f"REST={counts[1]}  BICEPS={counts[2]}")
         print(f"Kaydedildi: {OUTPUT_FILE}")
