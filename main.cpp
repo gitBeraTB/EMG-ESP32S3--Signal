@@ -104,7 +104,7 @@ void serialTask(void *pvParameters) {
     for (;;) {
         if (xQueueReceive(emgQueue, &data, portMAX_DELAY) == pdPASS) {
             // fill window (ADC -> volts to match training data scale)
-            window_buffer[window_idx++] = (float)data.value * 3.3f / 4095.0f;
+            //window_buffer[window_idx++] = (float)data.value * 3.3f / 4095.0f;
             if (window_idx >= WINDOW_SIZE) {
                 // ----- feature extraction -----
                 float sum = 0, sum_sq = 0;
@@ -129,6 +129,11 @@ void serialTask(void *pvParameters) {
                 float features[6] = {mean_val, std_val, var_val, rms_val, min_val, max_val};
                 // ----- inference -----
                 int prediction = clf.predict(features);
+                // STM32'ye: [0xAA][prediction][0x55]  (start byte, payload, end byte)
+                uint8_t packet[3] = {0xAA, (uint8_t)prediction, 0x55};
+                Serial1.write(packet, 3);
+
+                // PC debug aynı kalsın
                 // ----- output -----
                 Serial.print("Raw:");
                 Serial.print(data.value);
@@ -153,6 +158,7 @@ void serialTask(void *pvParameters) {
 // -----------------------------------------------------------------
 void setup() {
     Serial.begin(115200);
+    Serial1.begin(115200, SERIAL_8N1, 18, 17);  // RX=GPIO18, TX=GPIO17
     delay(1000);
     Serial.println("--- EMG REAL‑TIME INFERENCE (model.h) ---");
     analogSetAttenuation(ADC_11db);   // 0‑3.3 V
