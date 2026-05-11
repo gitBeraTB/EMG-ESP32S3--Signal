@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-guess.py – ESP32 model inference sonuçlarını gerçek zamanlı görselleştirir.
-Serial port üzerinden gelen satırlar şu formatta olmalı:
-    Raw:<adc_degeri>, Prediction:<code>
-Kod çalıştırılmadan önce gerekli paketleri kurun:
+guess.py — 3 Kanalli ESP32 model inference sonuclarini gercek zamanli gorsellestir.
+
+Serial port uzerinden gelen satirlar su formatta olmali:
+    Raw:CH1,CH2,CH3, Prediction:CODE
+
+Kurulum:
     pip install pyserial matplotlib
 
-Kullanım:
-    python guess.py /dev/cu.usbmodem1101   # (MacOS örnek port)
+Kullanim:
+    python guess.py /dev/cu.usbmodem1101
 """
 
 import sys
@@ -16,62 +18,119 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from collections import deque
 
-# --------------------------- Konfigürasyon ---------------------------
-PORT = sys.argv[1] if len(sys.argv) > 1 else "/dev/cu.usbmodem1101"
-BAUD = 115200
-MAX_POINTS = 2000               # gösterilecek maksimum örnek sayısı
-# -------------------------------------------------------------------
+# ==================== KONFIGÜRASYON ====================
+PORT       = sys.argv[1] if len(sys.argv) > 1 else "/dev/cu.usbmodem1101"
+BAUD       = 115200
+MAX_POINTS = 2000
+# =======================================================
 
-# Seri portu aç
+GESTURE_NAMES = {
+    0: "REST",
+    1000: "ELBOW",
+    2000: "SQUEEZE",
+    3000: "POWER GRIP",
+}
+
+# Seri port
 ser = serial.Serial(PORT, BAUD, timeout=0.1)
 
-# Çizim için iki deque (FIFO) kullanacağız
-raw_buf = deque(maxlen=MAX_POINTS)
+# Tamponlar — 3 kanal + 1 prediction
+ch1_buf  = deque(maxlen=MAX_POINTS)
+ch2_buf  = deque(maxlen=MAX_POINTS)
+ch3_buf  = deque(maxlen=MAX_POINTS)
 pred_buf = deque(maxlen=MAX_POINTS)
 
-# Matplotlib figür ve eksenleri
-fig, (ax_raw, ax_pred) = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
-line_raw, = ax_raw.plot([], [], lw=1, color="#10b981")
-line_pred, = ax_pred.plot([], [], lw=1, color="#f43f5e")
+# Matplotlib — 4 alt grafik
+fig, axes = plt.subplots(4, 1, figsize=(12, 8), sharex=True)
+fig.suptitle("3-Kanal EMG — Gercek Zamanli Tahmin", fontsize=14, fontweight='bold')
 
-ax_raw.set_ylabel("Raw ADC (0‑4095)")
-ax_raw.set_title("EMG Raw Signal")
-ax_raw.grid(True)
-ax_pred.set_ylabel("Tahmin (0/1000/2000)")
-ax_pred.set_xlabel("Örnek")
-ax_pred.set_title("Model Prediction (REST=0, BICEPS=1000, ELBOW=2000)")
-ax_pred.grid(True)
+line_ch1,  = axes[0].plot([], [], lw=1, color="#10b981")
+line_ch2,  = axes[1].plot([], [], lw=1, color="#3b82f6")
+line_ch3,  = axes[2].plot([], [], lw=1, color="#f59e0b")
+line_pred, = axes[3].plot([], [], lw=1.5, color="#ef4444")
 
-# Çizim güncelleme fonksiyonu
+axes[0].set_ylabel("CH1 Biceps")
+axes[0].set_title("Biceps")
+axes[0].grid(True, alpha=0.3)
+
+axes[1].set_ylabel("CH2 On Kol Ic")
+axes[1].set_title("On Kol Ic")
+axes[1].grid(True, alpha=0.3)
+
+axes[2].set_ylabel("CH3 On Kol Dis")
+axes[2].set_title("On Kol Dis")
+axes[2].grid(True, alpha=0.3)
+
+axes[3].set_ylabel("Tahmin")
+axes[3].set_xlabel("Ornek")
+axes[3].set_title("Model Prediction (0=REST, 1000=ELBOW, 2000=SQUEEZE, 3000=GRIP)")
+axes[3].set_yticks([0, 1000, 2000, 3000])
+axes[3].set_yticklabels(["REST", "ELBOW", "SQUEEZE", "GRIP"])
+axes[3].grid(True, alpha=0.3)
+
+# Son tahmin gostergesi
+pred_text = axes[3].text(0.98, 0.85, "", transform=axes[3].transAxes,
+                         fontsize=14, fontweight='bold', color='#ef4444',
+                         ha='right', va='top',
+                         bbox=dict(boxstyle='round,pad=0.3',
+                                   facecolor='#1e293b', alpha=0.9))
+
+
 def update(frame):
+    """Her frame'de Serial'den veri oku ve grafikleri guncelle."""
     try:
         line = ser.readline().decode("utf-8", errors="ignore").strip()
-        if not line:
-            return line_raw, line_pred
-        # Expected format: Raw:<value>, Prediction:<code>
-        if line.startswith("Raw:"):
-            parts = line.split(",")
-            raw_part = parts[0].split(":")[1].strip()
-            pred_part = parts[1].split(":")[1].strip() if len(parts) > 1 else "0"
-            raw_val = int(raw_part)
-            pred_val = int(pred_part)
-            raw_buf.append(raw_val)
-            pred_buf.append(pred_val)
-    except Exception as e:
-        # Hata olsa bile animasyon devam etsin
-        print(f"Parsing error: {e}")
+        if not line or not line.startswith("Raw:"):
+            return line_ch1, line_ch2, line_ch3, line_pred
 
-    # Güncel veriyle çizgileri güncelle
-    xdata = list(range(len(raw_buf)))
-    line_raw.set_data(xdata, list(raw_buf))
+        # Format: Raw:CH1,CH2,CH3, Prediction:CODE ...
+        # Ornek: Raw:2048,2050,2045, Prediction:1000 // ELBOW
+        parts = line.split(", Prediction:")
+        if len(parts) != 2:
+            return line_ch1, line_ch2, line_ch3, line_pred
+
+        raw_part  = parts[0].replace("Raw:", "")
+        pred_part = parts[1].strip()
+
+        # Raw kanallari parse et
+        raw_vals = raw_part.split(",")
+        if len(raw_vals) != 3:
+            return line_ch1, line_ch2, line_ch3, line_pred
+
+        ch1_val = int(raw_vals[0])
+        ch2_val = int(raw_vals[1])
+        ch3_val = int(raw_vals[2])
+
+        # Prediction parse et (sayi kismini al)
+        pred_val = int(pred_part.split()[0])
+
+        ch1_buf.append(ch1_val)
+        ch2_buf.append(ch2_val)
+        ch3_buf.append(ch3_val)
+        pred_buf.append(pred_val)
+
+        # Tahmin metnini guncelle
+        gesture = GESTURE_NAMES.get(pred_val, f"? ({pred_val})")
+        pred_text.set_text(f">> {gesture}")
+
+    except Exception as e:
+        print(f"Parse error: {e}")
+
+    # Grafikleri guncelle
+    xdata = list(range(len(ch1_buf)))
+    line_ch1.set_data(xdata, list(ch1_buf))
+    line_ch2.set_data(xdata, list(ch2_buf))
+    line_ch3.set_data(xdata, list(ch3_buf))
     line_pred.set_data(xdata, list(pred_buf))
-    # Ekseni otomatik ölçekle (görünür veri aralığı)
-    ax_raw.relim(); ax_raw.autoscale_view()
-    ax_pred.relim(); ax_pred.autoscale_view()
-    return line_raw, line_pred
+
+    for ax in axes:
+        ax.relim()
+        ax.autoscale_view()
+
+    return line_ch1, line_ch2, line_ch3, line_pred
+
 
 ani = animation.FuncAnimation(fig, update, interval=30, blit=False)
 plt.tight_layout()
 plt.show()
-
 ser.close()

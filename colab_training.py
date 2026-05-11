@@ -1,3 +1,15 @@
+# ==============================================================
+#  3-KANAL EMG — GOOGLE COLAB EGITIM SCRIPTI
+# ==============================================================
+# KULLANIM:
+#   1. Google Colab'da yeni notebook ac.
+#   2. Sol menuden "Files" -> emg_3ch_training_data.csv yukle.
+#   3. Ilk hucreye su komutu yaz ve calistir:
+#        !pip install micromlgen
+#   4. Sonraki hucreye bu scriptin tamamini yapistir ve calistir.
+#   5. model.h otomatik indirilecek — PlatformIO src/ altina koy.
+# ==============================================================
+
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -7,113 +19,180 @@ from sklearn.metrics import classification_report, confusion_matrix
 import seaborn as sns
 
 # ---------------------------------------------------------
-# GOOGLE COLAB USAGE GUIDE
-# 1. Open https://colab.research.google.com/
-# 2. Create a new notebook.
-# 3. On the left sidebar click "Files" and upload the CSV file
-#    (the file should contain three columns: "Zaman (sn)", "Voltaj (V)", "Label").
-# 4. Run the cell below to install the conversion library:
-#    !pip install micromlgen
-# 5. Run the whole script (copy‑paste all cells) to train the model and download model.h.
+# 1. VERI YUKLEME
 # ---------------------------------------------------------
+print("=" * 60)
+print("1. Veri yukleniyor...")
+CSV_FILE = 'emg_3ch_training_data.csv'
 
-print("1. Loading data...")
 try:
-    df = pd.read_csv('emg_kayit_ch1.csv')  # adjust filename if needed
-    # Remove any accidental whitespace from column names
+    df = pd.read_csv(CSV_FILE)
     df.columns = df.columns.str.strip()
-    print("Data shape:", df.shape)
-    print("Columns:", df.columns.tolist())
+    print(f"   Boyut : {df.shape}")
+    print(f"   Sutunlar: {df.columns.tolist()}")
 except FileNotFoundError:
-    print("ERROR: 'emg_kayit_ch1.csv' not found. Upload it to Colab first.")
+    print(f"HATA: '{CSV_FILE}' bulunamadi. Colab'a yukleyin.")
     raise SystemExit
 
-# Expected column names (allow slight variations)
-expected_cols = {'Zaman (sn)', 'Voltaj (V)', 'Label'}
-if not expected_cols.issubset(set(df.columns)):
-    print("WARNING: Expected columns not found. Available columns:", df.columns)
-    # Try to guess common names
-    if 'Timestamp' in df.columns:
-        df.rename(columns={'Timestamp': 'Zaman (sn)'}, inplace=True)
-    if 'EMG_Value' in df.columns:
-        df.rename(columns={'EMG_Value': 'Voltaj (V)'}, inplace=True)
-    if 'Label' not in df.columns:
-        print("ERROR: No 'Label' column present. Cannot continue.")
-        raise SystemExit
+# Sutun isimleri kontrolu
+required_cols = {'CH1', 'CH2', 'CH3', 'Label'}
+if not required_cols.issubset(set(df.columns)):
+    print(f"HATA: Beklenen sutunlar: {required_cols}")
+    print(f"       Mevcut sutunlar : {set(df.columns)}")
+    raise SystemExit
 
-print("\nLabel distribution (1=Rest, 2=Biceps, 3=Elbow):")
-print(df['Label'].value_counts())
+# Label=0 varsa (gecis verileri) at
+df = df[df['Label'] > 0].reset_index(drop=True)
 
-# ---------------------------------------------------------
-print("\n2. Feature extraction (sliding window)...")
-WINDOW_SIZE = 50   # 50 samples ≈ 0.025 s at 2000 Hz
-STEP_SIZE   = 25   # 50 % overlap
-
-features = []
-labels   = []
-
-# Build windows per class
-for label in df['Label'].unique():
-    # Keep only the voltage column for this label
-    signal = df[df['Label'] == label]['Voltaj (V)'].values
-    for start in range(0, len(signal) - WINDOW_SIZE + 1, STEP_SIZE):
-        window = signal[start:start + WINDOW_SIZE]
-        # Time‑domain features (same as before)
-        mean_val = np.mean(window)
-        std_val  = np.std(window)
-        var_val  = np.var(window)
-        rms_val  = np.sqrt(np.mean(window ** 2))
-        min_val  = np.min(window)
-        max_val  = np.max(window)
-        features.append([mean_val, std_val, var_val, rms_val, min_val, max_val])
-        labels.append(label)
-
-X = np.array(features)
-y = np.array(labels)
-print("Feature matrix shape:", X.shape)
+print("\nLabel dagilimi:")
+CLASS_NAMES = {1: 'REST', 2: 'ELBOW', 3: 'SQUEEZE', 4: 'POWER_GRIP'}
+for lbl in sorted(df['Label'].unique()):
+    n = (df['Label'] == lbl).sum()
+    print(f"   {lbl} ({CLASS_NAMES.get(lbl, '?')}) : {n} ornek")
 
 # ---------------------------------------------------------
-print("\n3. Train Random Forest (max_depth=8)...")
+# 2. FEATURE EXTRACTION — 3 Kanal x 6 Feature = 18
+# ---------------------------------------------------------
+print("\n" + "=" * 60)
+print("2. Feature extraction (sliding window)...")
+
+WINDOW_SIZE = 50    # 50 sample ≈ 25 ms @ 2000 Hz
+STEP_SIZE   = 25    # %50 overlap
+CHANNELS    = ['CH1', 'CH2', 'CH3']
+
+features_list = []
+labels_list   = []
+
+for label in sorted(df['Label'].unique()):
+    subset = df[df['Label'] == label]
+    ch_signals = {ch: subset[ch].values for ch in CHANNELS}
+    n_samples  = len(subset)
+
+    for start in range(0, n_samples - WINDOW_SIZE + 1, STEP_SIZE):
+        row_features = []
+        for ch in CHANNELS:
+            window = ch_signals[ch][start:start + WINDOW_SIZE]
+
+            mean_val = np.mean(window)
+            std_val  = np.std(window)
+            var_val  = np.var(window)
+            rms_val  = np.sqrt(np.mean(window ** 2))
+            min_val  = np.min(window)
+            max_val  = np.max(window)
+
+            # Siralama: mean, std, var, rms, min, max
+            # ESP32 firmware ile AYNI sira!
+            row_features.extend([mean_val, std_val, var_val,
+                                 rms_val, min_val, max_val])
+
+        features_list.append(row_features)
+        labels_list.append(label)
+
+X = np.array(features_list)
+y = np.array(labels_list)
+
+# Feature isimleri
+feature_names = []
+for ch in CHANNELS:
+    for feat in ['mean', 'std', 'var', 'rms', 'min', 'max']:
+        feature_names.append(f"{ch}_{feat}")
+
+print(f"   Feature matrisi: {X.shape}  (ornek x 18 feature)")
+print(f"   Labels         : {y.shape}")
+
+# ---------------------------------------------------------
+# 3. EGITIM
+# ---------------------------------------------------------
+print("\n" + "=" * 60)
+print("3. Random Forest egitiliyor...")
+
 X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42, stratify=y)
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
 
-clf = RandomForestClassifier(n_estimators=100, max_depth=8, random_state=42)
+clf = RandomForestClassifier(
+    n_estimators=100,
+    max_depth=10,       # 4 sinif icin biraz daha derin
+    random_state=42,
+    n_jobs=-1
+)
 clf.fit(X_train, y_train)
 
-print("Training completed.")
-print(f"Test accuracy: {clf.score(X_test, y_test) * 100:.2f}%")
+train_acc = clf.score(X_train, y_train) * 100
+test_acc  = clf.score(X_test, y_test) * 100
+print(f"   Train accuracy : {train_acc:.2f}%")
+print(f"   Test accuracy  : {test_acc:.2f}%")
 
 # ---------------------------------------------------------
-print("\n4. Evaluation report")
+# 4. DEGERLENDIRME
+# ---------------------------------------------------------
+print("\n" + "=" * 60)
+print("4. Siniflandirma raporu:")
 y_pred = clf.predict(X_test)
-# Human‑readable class names
-class_names = {1: 'REST', 2: 'BICEPS', 3: 'ELBOW'}
-unique_labels = np.unique(y)
-target_names = [class_names.get(l, str(l)) for l in unique_labels]
+
+unique_labels = sorted(np.unique(y))
+target_names  = [CLASS_NAMES.get(l, str(l)) for l in unique_labels]
+
 print(classification_report(y_test, y_pred, target_names=target_names))
 
+# Confusion Matrix
 cm = confusion_matrix(y_test, y_pred)
 plt.figure(figsize=(8, 6))
 sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
             xticklabels=target_names, yticklabels=target_names)
-plt.ylabel('True label')
-plt.xlabel('Predicted label')
-plt.title('Confusion matrix')
+plt.ylabel('Gercek')
+plt.xlabel('Tahmin')
+plt.title('Confusion Matrix — 3 Kanal x 4 Sinif')
+plt.tight_layout()
 plt.show()
 
+# Feature Importance
+importances = clf.feature_importances_
+sorted_idx  = np.argsort(importances)[::-1]
+
+plt.figure(figsize=(10, 5))
+plt.bar(range(len(importances)), importances[sorted_idx], color='#3b82f6')
+plt.xticks(range(len(importances)),
+           [feature_names[i] for i in sorted_idx], rotation=45, ha='right')
+plt.title('Feature Importance')
+plt.tight_layout()
+plt.show()
+
+print("\nEn onemli 5 feature:")
+for i in range(min(5, len(importances))):
+    idx = sorted_idx[i]
+    print(f"   {feature_names[idx]:>12s} : {importances[idx]:.4f}")
+
 # ---------------------------------------------------------
-print("\n5. Export model to C++ header (quantization disabled)")
+# 5. MODEL EXPORT — model.h
+# ---------------------------------------------------------
+print("\n" + "=" * 60)
+print("5. model.h olarak export ediliyor...")
+
 try:
     from micromlgen import port
-    from google.colab import files
-    c_code = port(clf, quantize=False)  # disable quantization to avoid ESP32 crashes
+    c_code = port(clf, quantize=False)
     model_file = 'model.h'
     with open(model_file, 'w') as f:
         f.write(c_code)
-    print(f"Model header saved as '{model_file}'.")
-    files.download(model_file)
-    print("Download started – place 'model.h' into the PlatformIO src folder next to main.cpp.")
+    print(f"   '{model_file}' kaydedildi.")
+
+    # Colab ortamindaysa otomatik indir
+    try:
+        from google.colab import files
+        files.download(model_file)
+        print("   Indirme baslatildi — model.h'yi PlatformIO src/ altina koyun.")
+    except ImportError:
+        print("   (Colab degil — dosya yerel olarak kaydedildi)")
+
 except ImportError:
-    print("ERROR: micromlgen not installed. Run '!pip install micromlgen' first.")
+    print("   HATA: micromlgen kurulu degil!")
+    print("   Cozum: !pip install micromlgen")
 except Exception as e:
-    print("ERROR while exporting model:", e)
+    print(f"   HATA: {e}")
+
+print("\n" + "=" * 60)
+print("TAMAMLANDI!")
+print("Sonraki adim: model.h'yi src/ altina koyup")
+print("main.cpp'de MODE_INFERENCE aktif edip flash'layin.")
+print("=" * 60)
