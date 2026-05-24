@@ -31,7 +31,12 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+/* Servo PWM: timer 1 MHz tiktigi icin CCR degeri = mikrosaniye (us).
+ * 50 Hz / 20 ms periyot. MG996R guvenli aralik ~1000-2000 us. */
+#define JAW_OPEN_US      1000U   /* TIM2/PA0: cene acik   */
+#define JAW_CLOSE_US     2000U   /* TIM2/PA0: cene kapali (kavra) */
+#define WRIST_NEUTRAL_US 1500U   /* TIM3/PA6: bilek notr  */
+#define WRIST_FLEX_US    2000U   /* TIM3/PA6: bilek donuk */
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -56,11 +61,19 @@ UART_HandleTypeDef huart1;
 /* USER CODE BEGIN PV */
 /* ESP32 prediction packet: [0xAA][prediction][0x55] */
 static uint8_t rx_byte;
-volatile uint8_t  esp_prediction = 0;     /* 0=REST, 1=BICEPS, 2=ELBOW */
+volatile uint8_t  esp_prediction = 0;     /* 0=REST (cene kapa), 1=SQUEEZE (cene ac) */
 volatile uint8_t  esp_prediction_ready = 0;
+
+/* --- UART teshis sayaclari (Live Expressions ile izle) --- */
+volatile uint32_t rx_byte_count  = 0;     /* gelen HER byte (cop dahil) */
+volatile uint32_t rx_frame_count = 0;     /* gecerli [AA..55] paket sayisi */
+volatile uint8_t  last_rx_byte   = 0;     /* en son gelen ham byte */
 
 typedef enum { WAIT_START, WAIT_DATA, WAIT_END } RxState_t;
 static RxState_t rx_state = WAIT_START;
+
+/* Echo packet back to ESP32: [0xBB][echoed_prediction][0x66] */
+static uint8_t tx_packet[3] = {0xBB, 0x00, 0x66};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -80,7 +93,9 @@ static void MX_USART1_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+/* PA0 = TIM2_CH1 -> cene (jaw),  PA6 = TIM3_CH1 -> bilek (wrist) */
+static inline void Jaw_Set(uint16_t us)   { __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, us); }
+static inline void Wrist_Set(uint16_t us) { __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, us); }
 /* USER CODE END 0 */
 
 /**
@@ -123,6 +138,12 @@ int main(void)
   /* USER CODE BEGIN 2 */
   /* Start receiving 1 byte via interrupt from ESP32 on USART1 */
   HAL_UART_Receive_IT(&huart1, &rx_byte, 1);
+
+  /* Servo PWM kanallarini baslat (sadece gripper icin gerekenler) */
+  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);   /* PA0 - cene  */
+  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);   /* PA6 - bilek */
+  Jaw_Set(JAW_CLOSE_US);         /* baslangic: cene kapali (REST konumu) */
+  Wrist_Set(WRIST_NEUTRAL_US);   /* baslangic: bilek notr */
   /* USER CODE END 2 */
 
   /* Initialize leds */
@@ -150,9 +171,25 @@ int main(void)
     {
       esp_prediction_ready = 0;
       uint8_t p = esp_prediction;
-      /* TODO: drive servos/LEDs based on p
-       *   0 = REST, 1 = BICEPS, 2 = ELBOW
-       */
+
+      /* Echo back to ESP32 for feedback-loop verification */
+      tx_packet[1] = p;
+      HAL_UART_Transmit_IT(&huart1, tx_packet, 3);
+
+      /* Jest -> servo hareketi  (PA0=cene, PA6=bilek) */
+      switch (p)
+      {
+        case 0:  /* REST    -> cene KAPALI */
+          Jaw_Set(JAW_CLOSE_US);
+          break;
+        case 1:  /* SQUEEZE -> cene ACIK */
+          Jaw_Set(JAW_OPEN_US);
+          break;
+        default:
+          break;
+      }
+
+      /* Yesil LED: hareket var mi gorsel geri bildirim */
       if (p == 0)      BSP_LED_Off(LED_GREEN);
       else             BSP_LED_On(LED_GREEN);
     }
@@ -684,6 +721,9 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART1)
   {
+    rx_byte_count++;            /* herhangi bir byte geldi mi? */
+    last_rx_byte = rx_byte;     /* ham degeri gor */
+
     switch (rx_state)
     {
       case WAIT_START:
@@ -694,7 +734,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
         rx_state = WAIT_END;
         break;
       case WAIT_END:
-        if (rx_byte == 0x55) esp_prediction_ready = 1;
+        if (rx_byte == 0x55) { esp_prediction_ready = 1; rx_frame_count++; }
         rx_state = WAIT_START;
         break;
     }

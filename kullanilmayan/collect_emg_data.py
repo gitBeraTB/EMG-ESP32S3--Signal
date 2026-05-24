@@ -5,7 +5,7 @@ from pynput import keyboard
 
 # --- AYARLAR ---
 SERIAL_PORT = '/dev/cu.usbmodem1101'
-BAUD_RATE = 115200
+BAUD_RATE = 921600
 FILE_NAME = "emg_training_data.csv"
 
 # Etiket eslemesi

@@ -18,7 +18,7 @@ from collections import deque
 
 # --------------------------- Konfigürasyon ---------------------------
 PORT = sys.argv[1] if len(sys.argv) > 1 else "/dev/cu.usbmodem1101"
-BAUD = 115200
+BAUD = 921600
 MAX_POINTS = 2000               # gösterilecek maksimum örnek sayısı
 # -------------------------------------------------------------------
 
