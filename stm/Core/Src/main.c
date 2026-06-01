@@ -18,10 +18,11 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "cmsis_os.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+/* cmsis_os.h yukarida CubeMX tarafindan zaten dahil edildi */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -33,10 +34,19 @@
 /* USER CODE BEGIN PD */
 /* Servo PWM: timer 1 MHz tiktigi icin CCR degeri = mikrosaniye (us).
  * 50 Hz / 20 ms periyot. MG996R guvenli aralik ~1000-2000 us. */
-#define JAW_OPEN_US      1000U   /* TIM2/PA0: cene acik   */
-#define JAW_CLOSE_US     2000U   /* TIM2/PA0: cene kapali (kavra) */
-#define WRIST_NEUTRAL_US 1500U   /* TIM3/PA6: bilek notr  */
-#define WRIST_FLEX_US    2000U   /* TIM3/PA6: bilek donuk */
+#define SERVO_MIN_US     1000U   /*   0 derece (1000us) */
+#define SERVO_MAX_US     2000U   /* 180 derece (2000us) */
+
+/* --- Aci ayarlari (DERECE cinsinden, soft-coded). Serbestce degistir. --- */
+#define JAW_REST_DEG      60U    /* cene  REST: yari acik baslangic (max'lamaz) */
+#define JAW_SQUEEZE_DEG   165U    /* cene  SQUEEZE: kapali konum */
+#define WRIST_REST_DEG     0U    /* bilek REST    konumu (0 derece)  */
+#define WRIST_SQUEEZE_DEG 90U    /* bilek SQUEEZE konumu (max 90 derece) */
+
+/* --- Yumusak hareket (slew-rate limiter) --- */
+#define SERVO_STEP_US     5U    /* her adimda kac us ilerlesin (kucuk = daha yumusak) */
+#define SERVO_STEP_MS     15U    /* adimlar arasi gecikme, ms     (kucuk = daha hizli) */
+/* Ornek: 90 derece = 500us. 500/10us = 50 adim x 15ms ~ 0.75 sn'de tam hareket. */
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -58,22 +68,49 @@ TIM_HandleTypeDef htim16;
 
 UART_HandleTypeDef huart1;
 
+/* Definitions for defaultTask */
+osThreadId_t defaultTaskHandle;
+const osThreadAttr_t defaultTask_attributes = {
+  .name = "defaultTask",
+  .priority = (osPriority_t) osPriorityNormal,
+  .stack_size = 128 * 4
+};
 /* USER CODE BEGIN PV */
-/* ESP32 prediction packet: [0xAA][prediction][0x55] */
+/* ESP32 prediction packet: [0xAA][ch1][ch2][0x55]
+ * ch1 -> cene (jaw),  ch2 -> bilek (wrist). Her biri 0=REST, 1=SQUEEZE. */
 static uint8_t rx_byte;
-volatile uint8_t  esp_prediction = 0;     /* 0=REST (cene kapa), 1=SQUEEZE (cene ac) */
-volatile uint8_t  esp_prediction_ready = 0;
+volatile uint8_t  esp_pred_ch1 = 0;       /* CH1: 0=REST (cene kapa), 1=SQUEEZE (cene ac)  */
+volatile uint8_t  esp_pred_ch2 = 0;       /* CH2: 0=REST (bilek notr), 1=SQUEEZE (bilek don) */
+
+/* RTOS kuyruklari: ISR bunlara yazar, JawTask/WristTask bunlardan okur. */
+osMessageQueueId_t jawQueueHandle;    /* CH1 -> cene  */
+osMessageQueueId_t wristQueueHandle;  /* CH2 -> bilek */
+
+/* LED gostergesi icin paylasilan durum: gorevler yazar, defaultTask okur.
+ * Tek dahili yesil LED (PA5) kanallari yanis desenine gore ayirir. */
+volatile uint8_t ch1_active = 0;   /* CH1 cene  SQUEEZE mi */
+volatile uint8_t ch2_active = 0;   /* CH2 bilek SQUEEZE mi */
+
+/* RTOS gorev handle'lari ve oznitelikleri */
+osThreadId_t jawTaskHandle;
+osThreadId_t wristTaskHandle;
+const osThreadAttr_t jawTask_attributes = {
+  .name = "JawTask",   .priority = (osPriority_t) osPriorityNormal, .stack_size = 128 * 4,
+};
+const osThreadAttr_t wristTask_attributes = {
+  .name = "WristTask", .priority = (osPriority_t) osPriorityNormal, .stack_size = 128 * 4,
+};
 
 /* --- UART teshis sayaclari (Live Expressions ile izle) --- */
 volatile uint32_t rx_byte_count  = 0;     /* gelen HER byte (cop dahil) */
 volatile uint32_t rx_frame_count = 0;     /* gecerli [AA..55] paket sayisi */
 volatile uint8_t  last_rx_byte   = 0;     /* en son gelen ham byte */
 
-typedef enum { WAIT_START, WAIT_DATA, WAIT_END } RxState_t;
+typedef enum { WAIT_START, WAIT_DATA1, WAIT_DATA2, WAIT_END } RxState_t;
 static RxState_t rx_state = WAIT_START;
 
-/* Echo packet back to ESP32: [0xBB][echoed_prediction][0x66] */
-static uint8_t tx_packet[3] = {0xBB, 0x00, 0x66};
+/* Echo packet back to ESP32: [0xBB][ch1][ch2][0x66] */
+static uint8_t tx_packet[4] = {0xBB, 0x00, 0x00, 0x66};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -87,8 +124,11 @@ static void MX_TIM15_Init(void);
 static void MX_TIM16_Init(void);
 static void MX_I2C2_Init(void);
 static void MX_USART1_UART_Init(void);
-/* USER CODE BEGIN PFP */
+void StartDefaultTask(void *argument);
 
+/* USER CODE BEGIN PFP */
+void JawTask(void *argument);    /* govde USER CODE BEGIN 4'te */
+void WristTask(void *argument);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -96,6 +136,10 @@ static void MX_USART1_UART_Init(void);
 /* PA0 = TIM2_CH1 -> cene (jaw),  PA6 = TIM3_CH1 -> bilek (wrist) */
 static inline void Jaw_Set(uint16_t us)   { __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, us); }
 static inline void Wrist_Set(uint16_t us) { __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, us); }
+
+/* Dereceyi (0..180) servo darbe genisligine (us) cevirir */
+static inline uint16_t Deg_To_Us(uint16_t deg)
+{ return (uint16_t)(SERVO_MIN_US + (uint32_t)deg * (SERVO_MAX_US - SERVO_MIN_US) / 180U); }
 /* USER CODE END 0 */
 
 /**
@@ -142,9 +186,42 @@ int main(void)
   /* Servo PWM kanallarini baslat (sadece gripper icin gerekenler) */
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);   /* PA0 - cene  */
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);   /* PA6 - bilek */
-  Jaw_Set(JAW_CLOSE_US);         /* baslangic: cene kapali (REST konumu) */
-  Wrist_Set(WRIST_NEUTRAL_US);   /* baslangic: bilek notr */
+  Jaw_Set(Deg_To_Us(JAW_REST_DEG));      /* baslangic: cene  REST  */
+  Wrist_Set(Deg_To_Us(WRIST_REST_DEG));  /* baslangic: bilek REST  */
   /* USER CODE END 2 */
+
+  /* Init scheduler */
+  osKernelInitialize();
+
+  /* USER CODE BEGIN RTOS_MUTEX */
+  /* add mutexes, ... */
+  /* USER CODE END RTOS_MUTEX */
+
+  /* USER CODE BEGIN RTOS_SEMAPHORES */
+  /* add semaphores, ... */
+  /* USER CODE END RTOS_SEMAPHORES */
+
+  /* USER CODE BEGIN RTOS_TIMERS */
+  /* start timers, add new ones, ... */
+  /* USER CODE END RTOS_TIMERS */
+
+  /* USER CODE BEGIN RTOS_QUEUES */
+  jawQueueHandle   = osMessageQueueNew(8, sizeof(uint8_t), NULL);  /* CH1 -> cene  */
+  wristQueueHandle = osMessageQueueNew(8, sizeof(uint8_t), NULL);  /* CH2 -> bilek */
+  /* USER CODE END RTOS_QUEUES */
+
+  /* Create the thread(s) */
+  /* creation of defaultTask */
+  defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+
+  /* USER CODE BEGIN RTOS_THREADS */
+  jawTaskHandle   = osThreadNew(JawTask,   NULL, &jawTask_attributes);
+  wristTaskHandle = osThreadNew(WristTask, NULL, &wristTask_attributes);
+  /* USER CODE END RTOS_THREADS */
+
+  /* USER CODE BEGIN RTOS_EVENTS */
+  /* add events, ... */
+  /* USER CODE END RTOS_EVENTS */
 
   /* Initialize leds */
   BSP_LED_Init(LED_GREEN);
@@ -163,36 +240,17 @@ int main(void)
     Error_Handler();
   }
 
+  /* Start scheduler */
+  osKernelStart();
+
+  /* We should never get here as control is now taken by the scheduler */
+
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    if (esp_prediction_ready)
-    {
-      esp_prediction_ready = 0;
-      uint8_t p = esp_prediction;
-
-      /* Echo back to ESP32 for feedback-loop verification */
-      tx_packet[1] = p;
-      HAL_UART_Transmit_IT(&huart1, tx_packet, 3);
-
-      /* Jest -> servo hareketi  (PA0=cene, PA6=bilek) */
-      switch (p)
-      {
-        case 0:  /* REST    -> cene KAPALI */
-          Jaw_Set(JAW_CLOSE_US);
-          break;
-        case 1:  /* SQUEEZE -> cene ACIK */
-          Jaw_Set(JAW_OPEN_US);
-          break;
-        default:
-          break;
-      }
-
-      /* Yesil LED: hareket var mi gorsel geri bildirim */
-      if (p == 0)      BSP_LED_Off(LED_GREEN);
-      else             BSP_LED_On(LED_GREEN);
-    }
+    /* FreeRTOS ile bu dongu erisilmez: osKernelStart() geri donmez.
+     * Tum is JawTask / WristTask gorevlerinde ve UART ISR'da yapilir. */
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -727,19 +785,88 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     switch (rx_state)
     {
       case WAIT_START:
-        if (rx_byte == 0xAA) rx_state = WAIT_DATA;
+        if (rx_byte == 0xAA) rx_state = WAIT_DATA1;
         break;
-      case WAIT_DATA:
-        esp_prediction = rx_byte;
+      case WAIT_DATA1:
+        esp_pred_ch1 = rx_byte;
+        rx_state = WAIT_DATA2;
+        break;
+      case WAIT_DATA2:
+        esp_pred_ch2 = rx_byte;
         rx_state = WAIT_END;
         break;
       case WAIT_END:
-        if (rx_byte == 0x55) { esp_prediction_ready = 1; rx_frame_count++; }
+        if (rx_byte == 0x55)
+        {
+          rx_frame_count++;
+          uint8_t c1 = esp_pred_ch1;   /* CH1 -> cene  */
+          uint8_t c2 = esp_pred_ch2;   /* CH2 -> bilek */
+
+          /* Echo back to ESP32: [0xBB][ch1][ch2][0x66] (feedback dogrulama) */
+          tx_packet[1] = c1;
+          tx_packet[2] = c2;
+          HAL_UART_Transmit_IT(&huart1, tx_packet, 4);
+
+          /* Her kanali kendi gorevine ilet (ISR-safe: timeout 0).
+           * Handle henuz olusmadiysa (scheduler baslamadan) atla. */
+          if (jawQueueHandle   != NULL) osMessageQueuePut(jawQueueHandle,   &c1, 0U, 0U);
+          if (wristQueueHandle != NULL) osMessageQueuePut(wristQueueHandle, &c2, 0U, 0U);
+        }
         rx_state = WAIT_START;
         break;
     }
     HAL_UART_Receive_IT(&huart1, &rx_byte, 1);
   }
+}
+
+/* ---- RTOS gorevleri (handle/queue olusturma main RTOS bloklarinda) ----
+ * Her gorev kuyrugundan komut alir ve servoyu HEDEF aciya adim adim
+ * (yumusak) goturur:
+ *   - hareket halindeyken kuyrugu kisa timeout (SERVO_STEP_MS) ile yoklar,
+ *     her adimda SERVO_STEP_US kadar ilerler (slew-rate limiter),
+ *   - hedefe ulasinca sonsuz bekler -> CPU bosa harcanmaz,
+ *   - hareket ederken yeni komut gelirse hedef aninda guncellenir. */
+static void Servo_Run(osMessageQueueId_t q, TIM_HandleTypeDef *htim,
+                      uint16_t rest_us, uint16_t squeeze_us,
+                      volatile uint8_t *active_flag)
+{
+  uint16_t cur    = rest_us;   /* mevcut konum (us) */
+  uint16_t target = rest_us;   /* hedef  konum (us) */
+  uint8_t  cmd;
+
+  __HAL_TIM_SET_COMPARE(htim, TIM_CHANNEL_1, cur);
+
+  for (;;)
+  {
+    uint32_t wait = (cur == target) ? osWaitForever : (uint32_t)SERVO_STEP_MS;
+    if (osMessageQueueGet(q, &cmd, NULL, wait) == osOK)
+    {
+      target = cmd ? squeeze_us : rest_us;
+      *active_flag = cmd;        /* LED gostergesi defaultTask'ta */
+    }
+
+    /* Hedefe dogru tek adim; kalan mesafe adimdan kucukse tam otur */
+    if (cur < target)
+      cur += (uint16_t)((target - cur > SERVO_STEP_US) ? SERVO_STEP_US : (target - cur));
+    else if (cur > target)
+      cur -= (uint16_t)((cur - target > SERVO_STEP_US) ? SERVO_STEP_US : (cur - target));
+
+    __HAL_TIM_SET_COMPARE(htim, TIM_CHANNEL_1, cur);
+  }
+}
+
+void JawTask(void *argument)
+{
+  (void)argument;
+  Servo_Run(jawQueueHandle, &htim2,
+            Deg_To_Us(JAW_REST_DEG), Deg_To_Us(JAW_SQUEEZE_DEG), &ch1_active);
+}
+
+void WristTask(void *argument)
+{
+  (void)argument;
+  Servo_Run(wristQueueHandle, &htim3,
+            Deg_To_Us(WRIST_REST_DEG), Deg_To_Us(WRIST_SQUEEZE_DEG), &ch2_active);
 }
 
 /**
@@ -754,6 +881,72 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
   }
 }
 /* USER CODE END 4 */
+
+/* USER CODE BEGIN Header_StartDefaultTask */
+/**
+  * @brief  Function implementing the defaultTask thread.
+  * @param  argument: Not used
+  * @retval None
+  */
+/* USER CODE END Header_StartDefaultTask */
+void StartDefaultTask(void *argument)
+{
+  /* USER CODE BEGIN 5 */
+  /* LED yoneticisi: tek dahili yesil LED'i kanal durumuna gore surer.
+   *   ikisi REST   -> kapali
+   *   sadece CH1   -> sabit yanik
+   *   sadece CH2   -> yavas blink (~400 ms)
+   *   ikisi birden -> hizli blink (~100 ms) */
+  for(;;)
+  {
+    uint8_t a = ch1_active;   /* cene  */
+    uint8_t b = ch2_active;   /* bilek */
+
+    if (!a && !b)             /* bos */
+    {
+      BSP_LED_Off(LED_GREEN);
+      osDelay(50);
+    }
+    else if (a && !b)         /* sadece CH1: sabit */
+    {
+      BSP_LED_On(LED_GREEN);
+      osDelay(50);
+    }
+    else if (!a && b)         /* sadece CH2: yavas blink */
+    {
+      BSP_LED_Toggle(LED_GREEN);
+      osDelay(400);
+    }
+    else                      /* ikisi birden: hizli blink */
+    {
+      BSP_LED_Toggle(LED_GREEN);
+      osDelay(100);
+    }
+  }
+  /* USER CODE END 5 */
+}
+
+/**
+  * @brief  Period elapsed callback in non blocking mode
+  * @note   This function is called  when TIM6 interrupt took place, inside
+  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+  * a global variable "uwTick" used as application time base.
+  * @param  htim : TIM handle
+  * @retval None
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /* USER CODE BEGIN Callback 0 */
+
+  /* USER CODE END Callback 0 */
+  if (htim->Instance == TIM6)
+  {
+    HAL_IncTick();
+  }
+  /* USER CODE BEGIN Callback 1 */
+
+  /* USER CODE END Callback 1 */
+}
 
 /**
   * @brief  This function is executed in case of error occurrence.

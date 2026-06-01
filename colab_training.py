@@ -8,72 +8,114 @@ import seaborn as sns
 
 # ---------------------------------------------------------
 # GOOGLE COLAB USAGE GUIDE
-# 1. Open https://colab.research.google.com/
-# 2. Create a new notebook.
-# 3. On the left sidebar click "Files" and upload the CSV file
-#    (the file should contain three columns: "Zaman (sn)", "Voltaj (V)", "Label").
-# 4. Run the cell below to install the conversion library:
-#    !pip install micromlgen
-# 5. Run the whole script (copy‑paste all cells) to train the model and download model.h.
+# 1. Open https://colab.research.google.com/  and create a new notebook.
+# 2. !pip install micromlgen
+# 3. Upload 'emg_kayit.csv' (produced by plotting.py) on the "Files" panel.
+# 4. Run this whole script -> trains a BINARY (REST/SQUEEZE) model and
+#    downloads model.h.
+#
+# IMPORTANT — this model is REUSED per channel on the ESP32:
+#   pred_ch1 = clf.predict(&features[0])   // CH1 (cene/jaw)
+#   pred_ch2 = clf.predict(&features[6])   // CH2 (bilek/wrist)
+# So it must be a single-channel, 6-feature, 2-class detector with
+# output 0 = REST, 1 = SQUEEZE to match the firmware.
+#
+# plotting.py CSV format:  Zaman (sn), CH1 (V), CH2 (V), Label
+#   Label 1 = CH1 REST   2 = CH1 SQUEEZE
+#   Label 3 = CH2 REST   4 = CH2 SQUEEZE
+# CH1 and CH2 windows are POOLED into one dataset so a single model fits
+# both muscles.
 # ---------------------------------------------------------
 
+# =========================================================
+#  CONFIG
+# =========================================================
+CSV_FILE     = 'emg_kayit.csv'
+LABEL_COLUMN = 'Label'
+
+# plotting.py label value -> (voltage column, binary class 0=REST / 1=SQUEEZE)
+LABEL_MAP = {
+    1: ('CH1 (V)', 0),   # CH1 REST
+    2: ('CH1 (V)', 1),   # CH1 SQUEEZE
+    3: ('CH2 (V)', 0),   # CH2 REST
+    4: ('CH2 (V)', 1),   # CH2 SQUEEZE
+}
+
+# plotting.py already writes VOLTS, so no ADC conversion needed here.
+# (Firmware features are also computed in volts: adc * 3.3 / 4095.)
+ADC_TO_VOLT = False
+ADC_MAX     = 4095.0
+VREF        = 3.3
+
+WINDOW_SIZE = 50   # 50 samples ~ 0.025 s at 2000 Hz  (must match firmware)
+STEP_SIZE   = 25   # 50 % overlap                      (must match firmware)
+
+# =========================================================
 print("1. Loading data...")
 try:
-    df = pd.read_csv('emg_kayit_ch1.csv')  # adjust filename if needed
-    # Remove any accidental whitespace from column names
+    df = pd.read_csv(CSV_FILE)
     df.columns = df.columns.str.strip()
     print("Data shape:", df.shape)
     print("Columns:", df.columns.tolist())
 except FileNotFoundError:
-    print("ERROR: 'emg_kayit_ch1.csv' not found. Upload it to Colab first.")
+    print(f"ERROR: '{CSV_FILE}' not found. Upload it to Colab first.")
     raise SystemExit
 
-# Expected column names (allow slight variations)
-expected_cols = {'Zaman (sn)', 'Voltaj (V)', 'Label'}
-if not expected_cols.issubset(set(df.columns)):
-    print("WARNING: Expected columns not found. Available columns:", df.columns)
-    # Try to guess common names
-    if 'Timestamp' in df.columns:
-        df.rename(columns={'Timestamp': 'Zaman (sn)'}, inplace=True)
-    if 'EMG_Value' in df.columns:
-        df.rename(columns={'EMG_Value': 'Voltaj (V)'}, inplace=True)
-    if 'Label' not in df.columns:
-        print("ERROR: No 'Label' column present. Cannot continue.")
-        raise SystemExit
+if LABEL_COLUMN not in df.columns:
+    print(f"ERROR: label column '{LABEL_COLUMN}' not present. Cannot continue.")
+    raise SystemExit
 
-print("\nLabel distribution (1=Rest, 2=Biceps, 3=Elbow):")
-print(df['Label'].value_counts())
+needed_cols = {col for col, _ in LABEL_MAP.values()}
+missing = [c for c in needed_cols if c not in df.columns]
+if missing:
+    print(f"ERROR: voltage column(s) not found: {missing}")
+    print("Available columns:", df.columns.tolist())
+    raise SystemExit
+
+print("\nRaw label distribution (1=CH1R 2=CH1S 3=CH2R 4=CH2S):")
+print(df[LABEL_COLUMN].value_counts())
 
 # ---------------------------------------------------------
-print("\n2. Feature extraction (sliding window)...")
-WINDOW_SIZE = 50   # 50 samples ≈ 0.025 s at 2000 Hz
-STEP_SIZE   = 25   # 50 % overlap
+print("\n2. Feature extraction (sliding window, CH1+CH2 pooled)...")
+
+
+def extract_features(window):
+    """6 time-domain features in the EXACT order the firmware uses:
+       mean, std, var, rms, min, max."""
+    return [
+        np.mean(window),
+        np.std(window),
+        np.var(window),
+        np.sqrt(np.mean(window ** 2)),
+        np.min(window),
+        np.max(window),
+    ]
+
 
 features = []
 labels   = []
 
-# Build windows per class
-for label in df['Label'].unique():
-    # Keep only the voltage column for this label
-    signal = df[df['Label'] == label]['Voltaj (V)'].values
+for raw_label, (volt_col, bin_class) in LABEL_MAP.items():
+    # Only the rows recorded under this label, from the relevant channel.
+    signal = df[df[LABEL_COLUMN] == raw_label][volt_col].astype(float).values
+    if ADC_TO_VOLT:
+        signal = signal * VREF / ADC_MAX
     for start in range(0, len(signal) - WINDOW_SIZE + 1, STEP_SIZE):
-        window = signal[start:start + WINDOW_SIZE]
-        # Time‑domain features (same as before)
-        mean_val = np.mean(window)
-        std_val  = np.std(window)
-        var_val  = np.var(window)
-        rms_val  = np.sqrt(np.mean(window ** 2))
-        min_val  = np.min(window)
-        max_val  = np.max(window)
-        features.append([mean_val, std_val, var_val, rms_val, min_val, max_val])
-        labels.append(label)
+        features.append(extract_features(signal[start:start + WINDOW_SIZE]))
+        labels.append(bin_class)
 
 X = np.array(features)
 y = np.array(labels)
 print("Feature matrix shape:", X.shape)
+print("Window class distribution (0=REST, 1=SQUEEZE):",
+      dict(zip(*np.unique(y, return_counts=True))))
+
+if len(X) == 0 or len(np.unique(y)) < 2:
+    print("ERROR: need both REST and SQUEEZE windows to train. Check labels.")
+    raise SystemExit
 
 # ---------------------------------------------------------
-print("\n3. Train Random Forest (max_depth=8)...")
+print("\n3. Train Random Forest (binary, max_depth=8)...")
 X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.2, random_state=42, stratify=y)
 
@@ -86,14 +128,11 @@ print(f"Test accuracy: {clf.score(X_test, y_test) * 100:.2f}%")
 # ---------------------------------------------------------
 print("\n4. Evaluation report")
 y_pred = clf.predict(X_test)
-# Human‑readable class names
-class_names = {1: 'REST', 2: 'BICEPS', 3: 'ELBOW'}
-unique_labels = np.unique(y)
-target_names = [class_names.get(l, str(l)) for l in unique_labels]
+target_names = ['REST', 'SQUEEZE']
 print(classification_report(y_test, y_pred, target_names=target_names))
 
 cm = confusion_matrix(y_test, y_pred)
-plt.figure(figsize=(8, 6))
+plt.figure(figsize=(6, 5))
 sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
             xticklabels=target_names, yticklabels=target_names)
 plt.ylabel('True label')
@@ -105,14 +144,16 @@ plt.show()
 print("\n5. Export model to C++ header (quantization disabled)")
 try:
     from micromlgen import port
-    from google.colab import files
     c_code = port(clf, quantize=False)  # disable quantization to avoid ESP32 crashes
-    model_file = 'model.h'
-    with open(model_file, 'w') as f:
+    with open('model.h', 'w') as f:
         f.write(c_code)
-    print(f"Model header saved as '{model_file}'.")
-    files.download(model_file)
-    print("Download started – place 'model.h' into the PlatformIO src folder next to main.cpp.")
+    print("Model header saved as 'model.h'.")
+    try:
+        from google.colab import files
+        files.download('model.h')
+        print("Download started - place 'model.h' next to main.cpp in the PlatformIO src folder.")
+    except ImportError:
+        print("(Not on Colab) 'model.h' written to the working directory.")
 except ImportError:
     print("ERROR: micromlgen not installed. Run '!pip install micromlgen' first.")
 except Exception as e:

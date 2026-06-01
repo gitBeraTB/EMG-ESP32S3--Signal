@@ -15,14 +15,23 @@ BAUD_RATE   = 921600       # main.cpp ile ayni
 MAX_POINTS  = 10000        # 5 sn @ 2 kHz (kasilmalari rahat gormek icin)
 OUTPUT_FILE = 'emg_kayit.csv'
 
-NUM_CH       = 3
-CH_NAMES     = ['CH1', 'CH2', 'CH3']
-CH_COLORS    = ['#ef4444', '#22c55e', '#3b82f6']   # kirmizi / yesil / mavi
+# NOT: ESP32 MODE_COLLECT modunda olmali (main.cpp). Aksi halde CSV yerine
+# tahmin metni gelir ve hicbir satir ayrıştirilamaz.
+NUM_CH       = 2
+CH_NAMES     = ['CH1', 'CH2']
+CH_COLORS    = ['#ef4444', '#22c55e']              # kirmizi / yesil
 
-# Etiket eslemesi: '1'=REST, '2'=SQUEEZE  (0 = kayit yok)
-LABELS       = {'1': 1, '2': 2}
-LABEL_NAMES  = {0: 'IDLE', 1: 'REST', 2: 'SQUEEZE'}
-LABEL_COLORS = {0: '#94a3b8', 1: '#22c55e', 2: '#ef4444'}
+# Etiket eslemesi (PER-KANAL):
+#   '1' = CH1 REST   '2' = CH1 SQUEEZE
+#   '3' = CH2 REST   '4' = CH2 SQUEEZE
+#   (0 = kayit yok / IDLE)
+LABELS       = {'1': 1, '2': 2, '3': 3, '4': 4}
+LABEL_NAMES  = {0: 'IDLE',
+                1: 'CH1 REST', 2: 'CH1 SQUEEZE',
+                3: 'CH2 REST', 4: 'CH2 SQUEEZE'}
+LABEL_COLORS = {0: '#94a3b8',
+                1: '#22c55e', 2: '#ef4444',
+                3: '#38bdf8', 4: '#f97316'}
 
 current_label = 0
 active_keys   = set()
@@ -41,7 +50,8 @@ except Exception as e:
 try:
     csv_file   = open(OUTPUT_FILE, mode='w', newline='')
     csv_writer = csv.writer(csv_file)
-    csv_writer.writerow(['Zaman (sn)', 'CH1 (V)', 'CH2 (V)', 'CH3 (V)', 'Label'])
+    # Label = 1..4 (hangi kanal + REST/SQUEEZE). Egitim scripti bunu cozumler.
+    csv_writer.writerow(['Zaman (sn)', 'CH1 (V)', 'CH2 (V)', 'Label'])
     print(f"Kayit: {OUTPUT_FILE}")
 except Exception as e:
     print(f"Dosya hatasi: {e}")
@@ -51,8 +61,10 @@ except Exception as e:
 print("-" * 50)
 print("ETIKETLEME (PLOT PENCERESI ODAKTA OLMALI):")
 print("  Tus yok        -> kayit yok")
-print("  '1' basili tut -> REST")
-print("  '2' basili tut -> SQUEEZE")
+print("  '1' basili tut -> CH1 REST")
+print("  '2' basili tut -> CH1 SQUEEZE")
+print("  '3' basili tut -> CH2 REST")
+print("  '4' basili tut -> CH2 SQUEEZE")
 print("-" * 50)
 
 start_time = time.time()
@@ -88,7 +100,7 @@ pg.setConfigOptions(antialias=False)   # cok nokta cizerken antialias yavaslatir
 
 win = PlotWindow(show=True, title="EMG + Etiketleme")
 win.resize(1100, 500)
-win.setWindowTitle('EMG Bionic Hand - Etiketli Kayit')
+win.setWindowTitle('EMG Bionic Hand - Etiketli Kayit (2CH)')
 win.setBackground('#0f172a')
 win.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 win.setFocus()
@@ -125,7 +137,7 @@ count_text.setFont(font2)
 p.addItem(count_text)
 
 data_buffer = np.zeros((NUM_CH, MAX_POINTS))
-counts = {1: 0, 2: 0}
+counts = {1: 0, 2: 0, 3: 0, 4: 0}
 last_drawn_label = -1
 serial_leftover = ''   # bir tick'te yarim kalan satir bir sonrakine tasinir
 
@@ -186,7 +198,7 @@ def update():
         label_text.setColor(LABEL_COLORS[current_label])
         last_drawn_label = current_label
     count_text.setText(
-        f"REST={counts[1]}  SQUEEZE={counts[2]}"
+        f"CH1 R={counts[1]} S={counts[2]}   CH2 R={counts[3]} S={counts[4]}"
     )
 
 timer = QTimer()
@@ -205,5 +217,6 @@ if __name__ == '__main__':
         ser.close()
         csv_file.close()
         print("-" * 50)
-        print(f"REST={counts[1]}  SQUEEZE={counts[2]}")
+        print(f"CH1  REST={counts[1]}  SQUEEZE={counts[2]}")
+        print(f"CH2  REST={counts[3]}  SQUEEZE={counts[4]}")
         print(f"Kaydedildi: {OUTPUT_FILE}")

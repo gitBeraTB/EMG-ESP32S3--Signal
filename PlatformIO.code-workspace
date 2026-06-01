@@ -1,11 +1,12 @@
 {
 	"folders": [
 		{
-			"path": "../../.."
+			"name": "hmi-esp32 (PlatformIO)",
+			"path": "hmi-esp32"
 		},
 		{
-			"name": "OROSPU_LEMAN",
-			"path": ".."
+			"name": "hmi-latest (kaynak)",
+			"path": "."
 		}
 	],
 	"settings": {}
