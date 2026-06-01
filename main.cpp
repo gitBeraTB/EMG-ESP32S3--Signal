@@ -31,8 +31,8 @@ void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
 //  MODE_COLLECT   : Veri toplama (Serial'e CSV formatinda 3 kanal basar)
 //  MODE_INFERENCE : Gercek zamanli tahmin
 // ================================================================
-// #define MODE_COLLECT
-#define MODE_INFERENCE
+ #define MODE_COLLECT
+//#define MODE_INFERENCE
 
 #ifdef MODE_INFERENCE
 #include "model.h"
@@ -47,7 +47,8 @@ Eloquent::ML::Port::RandomForest clf;
 // -----------------------------------------------------------------
 const int EMG_PIN_1 = 4;           // ADC1_CH3  -> CH1 (cene/jaw)
 const int EMG_PIN_2 = 5;           // ADC1_CH4  -> CH2 (bilek/wrist)
-const int NUM_CH    = 2;           // aktif EMG kanal sayisi (CH1=cene, CH2=bilek)
+const int EMG_PIN_3 = 6;           // ADC1_CH5  -> CH3 (biceps/dirsek-elbow)
+const int NUM_CH    = 3;           // aktif EMG kanal sayisi (CH1=cene, CH2=bilek, CH3=dirsek)
 const int SAMPLING_RATE_HZ = 2000; // 2 kHz acquisition
 const int64_t SAMPLE_PERIOD_US = 1000000 / SAMPLING_RATE_HZ;
 
@@ -103,6 +104,7 @@ QueueHandle_t emgQueue;
 struct EMGData {
   uint16_t ch1;
   uint16_t ch2;
+  uint16_t ch3;
 };
 
 // -----------------------------------------------------------------
@@ -111,13 +113,14 @@ struct EMGData {
 void adcTask(void *pvParameters) {
   EMGData data;
   int64_t nextSampleTime = esp_timer_get_time();
-  float dc_offset[NUM_CH] = {2047.0, 2047.0};
+  float dc_offset[NUM_CH] = {2047.0, 2047.0, 2047.0};
 
   // quick DC calibration
   float sum[NUM_CH] = {0};
   for (int i = 0; i < 200; ++i) {
     sum[0] += analogRead(EMG_PIN_1);
     sum[1] += analogRead(EMG_PIN_2);
+    sum[2] += analogRead(EMG_PIN_3);
     delayMicroseconds(500);
   }
   for (int ch = 0; ch < NUM_CH; ch++) {
@@ -129,6 +132,7 @@ void adcTask(void *pvParameters) {
     uint16_t rawVals[NUM_CH];
     rawVals[0] = analogRead(EMG_PIN_1);
     rawVals[1] = analogRead(EMG_PIN_2);
+    rawVals[2] = analogRead(EMG_PIN_3);
 
     uint16_t finalVals[NUM_CH];
     float SOFTWARE_GAIN = 5.0; // Sinyali 5 kat buyutur
@@ -151,6 +155,7 @@ void adcTask(void *pvParameters) {
 
     data.ch1 = finalVals[0];
     data.ch2 = finalVals[1];
+    data.ch3 = finalVals[2];
     xQueueSend(emgQueue, &data, 0);
 
     nextSampleTime += SAMPLE_PERIOD_US;
@@ -174,16 +179,17 @@ void serialTask(void *pvParameters) {
   for (;;) {
     if (xQueueReceive(emgQueue, &data, portMAX_DELAY) == pdPASS) {
 #ifdef MODE_COLLECT
-      Serial.printf("%d,%d\n", data.ch1, data.ch2);
+      Serial.printf("%d,%d,%d\n", data.ch1, data.ch2, data.ch3);
 #endif
 
 #ifdef MODE_INFERENCE
       window_buffer[0][window_idx] = (float)data.ch1 * 3.3f / 4095.0f;
       window_buffer[1][window_idx] = (float)data.ch2 * 3.3f / 4095.0f;
+      window_buffer[2][window_idx] = (float)data.ch3 * 3.3f / 4095.0f;
       window_idx++;
 
       if (window_idx >= WINDOW_SIZE) {
-        float features[NUM_CH * 6]; // 2 channels * 6 features
+        float features[NUM_CH * 6]; // 3 channels * 6 features
 
         for (int ch = 0; ch < NUM_CH; ++ch) {
           float sum = 0, sum_sq = 0;
@@ -220,24 +226,28 @@ void serialTask(void *pvParameters) {
         }
 
         // Her kanal kendi 6 feature blogu ile ayni REST/SQUEEZE modelinden gecer
-        int pred_ch1 = clf.predict(&features[0]); // CH1 -> cene  (jaw)
-        int pred_ch2 = clf.predict(&features[6]); // CH2 -> bilek (wrist)
+        int pred_ch1 = clf.predict(&features[0]);  // CH1 -> cene   (jaw)
+        int pred_ch2 = clf.predict(&features[6]);  // CH2 -> bilek  (wrist)
+        int pred_ch3 = clf.predict(&features[12]); // CH3 -> dirsek (elbow/biceps)
 
-        // UART paketi: [0xAA][ch1][ch2][0x55]
-        uint8_t packet[4] = {0xAA, (uint8_t)pred_ch1, (uint8_t)pred_ch2, 0x55};
-        Serial1.write(packet, 4);
+        // UART paketi: [0xAA][ch1][ch2][ch3][0x55]
+        uint8_t packet[5] = {0xAA, (uint8_t)pred_ch1, (uint8_t)pred_ch2,
+                             (uint8_t)pred_ch3, 0x55};
+        Serial1.write(packet, 5);
 
-        // ESP-NOW paketi (gestureID alanina iki kanali paketle: ch1 | ch2<<1)
-        myData.gestureID = (pred_ch1 & 0x01) | ((pred_ch2 & 0x01) << 1);
+        // ESP-NOW paketi (gestureID alanina uc kanali paketle: ch1 | ch2<<1 | ch3<<2)
+        myData.gestureID = (pred_ch1 & 0x01) | ((pred_ch2 & 0x01) << 1) |
+                           ((pred_ch3 & 0x01) << 2);
         myData.confidence = 1.0;
         myData.batteryLevel = 95;
         myData.timestamp = millis();
         esp_now_send(receiverAddress, (uint8_t *)&myData, sizeof(myData));
 
         // Serial ciktisi (Okunabilir metin)
-        Serial.printf("CH1(cene): %s | CH2(bilek): %s\n",
+        Serial.printf("CH1(cene): %s | CH2(bilek): %s | CH3(dirsek): %s\n",
                       pred_ch1 ? "SQUEEZE" : "REST",
-                      pred_ch2 ? "SQUEEZE" : "REST");
+                      pred_ch2 ? "SQUEEZE" : "REST",
+                      pred_ch3 ? "SQUEEZE" : "REST");
 
         // slide window
         for (int ch = 0; ch < NUM_CH; ++ch) {
@@ -261,10 +271,10 @@ void setup() {
   delay(1000);
 
 #ifdef MODE_COLLECT
-  Serial.println("--- EMG VERI TOPLAMA MODU (2 Kanal) ---");
+  Serial.println("--- EMG VERI TOPLAMA MODU (3 Kanal) ---");
 #endif
 #ifdef MODE_INFERENCE
-  Serial.println("--- EMG REAL-TIME INFERENCE 2CH (model.h) ---");
+  Serial.println("--- EMG REAL-TIME INFERENCE 3CH (model.h) ---");
 #endif
 
   analogSetAttenuation(ADC_11db);

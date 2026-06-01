@@ -17,21 +17,24 @@ OUTPUT_FILE = 'emg_kayit.csv'
 
 # NOT: ESP32 MODE_COLLECT modunda olmali (main.cpp). Aksi halde CSV yerine
 # tahmin metni gelir ve hicbir satir ayrıştirilamaz.
-NUM_CH       = 2
-CH_NAMES     = ['CH1', 'CH2']
-CH_COLORS    = ['#ef4444', '#22c55e']              # kirmizi / yesil
+NUM_CH       = 3
+CH_NAMES     = ['CH1', 'CH2', 'CH3']
+CH_COLORS    = ['#ef4444', '#22c55e', '#eab308']   # kirmizi / yesil / sari
 
 # Etiket eslemesi (PER-KANAL):
-#   '1' = CH1 REST   '2' = CH1 SQUEEZE
-#   '3' = CH2 REST   '4' = CH2 SQUEEZE
+#   '1' = CH1 REST   '2' = CH1 SQUEEZE   (cene)
+#   '3' = CH2 REST   '4' = CH2 SQUEEZE   (bilek)
+#   '5' = CH3 REST   '6' = CH3 SQUEEZE   (dirsek/biceps)
 #   (0 = kayit yok / IDLE)
-LABELS       = {'1': 1, '2': 2, '3': 3, '4': 4}
+LABELS       = {'1': 1, '2': 2, '3': 3, '4': 4, '5': 5, '6': 6}
 LABEL_NAMES  = {0: 'IDLE',
                 1: 'CH1 REST', 2: 'CH1 SQUEEZE',
-                3: 'CH2 REST', 4: 'CH2 SQUEEZE'}
+                3: 'CH2 REST', 4: 'CH2 SQUEEZE',
+                5: 'CH3 REST', 6: 'CH3 SQUEEZE'}
 LABEL_COLORS = {0: '#94a3b8',
                 1: '#22c55e', 2: '#ef4444',
-                3: '#38bdf8', 4: '#f97316'}
+                3: '#38bdf8', 4: '#f97316',
+                5: '#a78bfa', 6: '#eab308'}
 
 current_label = 0
 active_keys   = set()
@@ -50,8 +53,8 @@ except Exception as e:
 try:
     csv_file   = open(OUTPUT_FILE, mode='w', newline='')
     csv_writer = csv.writer(csv_file)
-    # Label = 1..4 (hangi kanal + REST/SQUEEZE). Egitim scripti bunu cozumler.
-    csv_writer.writerow(['Zaman (sn)', 'CH1 (V)', 'CH2 (V)', 'Label'])
+    # Label = 1..6 (hangi kanal + REST/SQUEEZE). Egitim scripti bunu cozumler.
+    csv_writer.writerow(['Zaman (sn)', 'CH1 (V)', 'CH2 (V)', 'CH3 (V)', 'Label'])
     print(f"Kayit: {OUTPUT_FILE}")
 except Exception as e:
     print(f"Dosya hatasi: {e}")
@@ -65,6 +68,8 @@ print("  '1' basili tut -> CH1 REST")
 print("  '2' basili tut -> CH1 SQUEEZE")
 print("  '3' basili tut -> CH2 REST")
 print("  '4' basili tut -> CH2 SQUEEZE")
+print("  '5' basili tut -> CH3 REST")
+print("  '6' basili tut -> CH3 SQUEEZE")
 print("-" * 50)
 
 start_time = time.time()
@@ -137,7 +142,7 @@ count_text.setFont(font2)
 p.addItem(count_text)
 
 data_buffer = np.zeros((NUM_CH, MAX_POINTS))
-counts = {1: 0, 2: 0, 3: 0, 4: 0}
+counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0}
 last_drawn_label = -1
 serial_leftover = ''   # bir tick'te yarim kalan satir bir sonrakine tasinir
 
@@ -199,6 +204,7 @@ def update():
         last_drawn_label = current_label
     count_text.setText(
         f"CH1 R={counts[1]} S={counts[2]}   CH2 R={counts[3]} S={counts[4]}"
+        f"   CH3 R={counts[5]} S={counts[6]}"
     )
 
 timer = QTimer()
@@ -219,4 +225,5 @@ if __name__ == '__main__':
         print("-" * 50)
         print(f"CH1  REST={counts[1]}  SQUEEZE={counts[2]}")
         print(f"CH2  REST={counts[3]}  SQUEEZE={counts[4]}")
+        print(f"CH3  REST={counts[5]}  SQUEEZE={counts[6]}")
         print(f"Kaydedildi: {OUTPUT_FILE}")

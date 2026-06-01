@@ -15,16 +15,18 @@ import seaborn as sns
 #    downloads model.h.
 #
 # IMPORTANT — this model is REUSED per channel on the ESP32:
-#   pred_ch1 = clf.predict(&features[0])   // CH1 (cene/jaw)
-#   pred_ch2 = clf.predict(&features[6])   // CH2 (bilek/wrist)
+#   pred_ch1 = clf.predict(&features[0])    // CH1 (cene/jaw)
+#   pred_ch2 = clf.predict(&features[6])    // CH2 (bilek/wrist)
+#   pred_ch3 = clf.predict(&features[12])   // CH3 (dirsek/biceps-elbow)
 # So it must be a single-channel, 6-feature, 2-class detector with
 # output 0 = REST, 1 = SQUEEZE to match the firmware.
 #
-# plotting.py CSV format:  Zaman (sn), CH1 (V), CH2 (V), Label
+# plotting.py CSV format:  Zaman (sn), CH1 (V), CH2 (V), CH3 (V), Label
 #   Label 1 = CH1 REST   2 = CH1 SQUEEZE
 #   Label 3 = CH2 REST   4 = CH2 SQUEEZE
-# CH1 and CH2 windows are POOLED into one dataset so a single model fits
-# both muscles.
+#   Label 5 = CH3 REST   6 = CH3 SQUEEZE
+# CH1, CH2 and CH3 windows are POOLED into one dataset so a single model
+# fits all muscles.
 # ---------------------------------------------------------
 
 # =========================================================
@@ -39,6 +41,8 @@ LABEL_MAP = {
     2: ('CH1 (V)', 1),   # CH1 SQUEEZE
     3: ('CH2 (V)', 0),   # CH2 REST
     4: ('CH2 (V)', 1),   # CH2 SQUEEZE
+    5: ('CH3 (V)', 0),   # CH3 REST
+    6: ('CH3 (V)', 1),   # CH3 SQUEEZE
 }
 
 # plotting.py already writes VOLTS, so no ADC conversion needed here.
@@ -72,11 +76,11 @@ if missing:
     print("Available columns:", df.columns.tolist())
     raise SystemExit
 
-print("\nRaw label distribution (1=CH1R 2=CH1S 3=CH2R 4=CH2S):")
+print("\nRaw label distribution (1=CH1R 2=CH1S 3=CH2R 4=CH2S 5=CH3R 6=CH3S):")
 print(df[LABEL_COLUMN].value_counts())
 
 # ---------------------------------------------------------
-print("\n2. Feature extraction (sliding window, CH1+CH2 pooled)...")
+print("\n2. Feature extraction (sliding window, CH1+CH2+CH3 pooled)...")
 
 
 def extract_features(window):
@@ -141,20 +145,27 @@ plt.title('Confusion matrix')
 plt.show()
 
 # ---------------------------------------------------------
+# ---------------------------------------------------------
 print("\n5. Export model to C++ header (quantization disabled)")
 try:
     from micromlgen import port
-    c_code = port(clf, quantize=False)  # disable quantization to avoid ESP32 crashes
+    # Model C++ formatına çevriliyor (ESP32 çökmemesi için quantize=False)
+    c_code = port(clf, quantize=False)
+    
+    # Dosya olarak yazılıyor
     with open('model.h', 'w') as f:
         f.write(c_code)
-    print("Model header saved as 'model.h'.")
+    print("✅ Model basariyla uretildi ve 'model.h' olarak kaydedildi.")
+    
+    # Colab üzerinden indirme tetikleniyor
     try:
         from google.colab import files
         files.download('model.h')
-        print("Download started - place 'model.h' next to main.cpp in the PlatformIO src folder.")
+        print("📥 Tarayiciniz model.h dosyasini indiriyor... Lutfen ESP32 projenizdeki src klasorune atin.")
     except ImportError:
-        print("(Not on Colab) 'model.h' written to the working directory.")
+        print("ℹ️ (Google Colab'de degilsiniz) 'model.h' dosyasi python kodunun bulundugu klasore kaydedildi.")
+        
 except ImportError:
-    print("ERROR: micromlgen not installed. Run '!pip install micromlgen' first.")
+    print("❌ HATA: micromlgen kütüphanesi eksik. Lütfen en üstte '!pip install micromlgen' çalıştırın.")
 except Exception as e:
-    print("ERROR while exporting model:", e)
+    print("❌ BEKLENMEYEN HATA:", e)

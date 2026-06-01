@@ -42,6 +42,8 @@
 #define JAW_SQUEEZE_DEG   140U    /* cene  SQUEEZE: kapali konum */
 #define WRIST_REST_DEG     145U    /* bilek REST    konumu (0 derece)  */
 #define WRIST_SQUEEZE_DEG 20U    /* bilek SQUEEZE konumu (max 90 derece) */
+#define ELBOW_REST_DEG     0U    /* dirsek REST    konumu (CH3=biceps) */
+#define ELBOW_SQUEEZE_DEG 20U    /* dirsek SQUEEZE konumu (max 90 derece) */
 
 /* --- Yumusak hareket (slew-rate limiter) --- */
 #define SERVO_STEP_US     5U    /* her adimda kac us ilerlesin (kucuk = daha yumusak) */
@@ -81,24 +83,31 @@ const osThreadAttr_t defaultTask_attributes = {
 static uint8_t rx_byte;
 volatile uint8_t  esp_pred_ch1 = 0;       /* CH1: 0=REST (cene kapa), 1=SQUEEZE (cene ac)  */
 volatile uint8_t  esp_pred_ch2 = 0;       /* CH2: 0=REST (bilek notr), 1=SQUEEZE (bilek don) */
+volatile uint8_t  esp_pred_ch3 = 0;       /* CH3: 0=REST (dirsek notr), 1=SQUEEZE (dirsek don) */
 
-/* RTOS kuyruklari: ISR bunlara yazar, JawTask/WristTask bunlardan okur. */
-osMessageQueueId_t jawQueueHandle;    /* CH1 -> cene  */
-osMessageQueueId_t wristQueueHandle;  /* CH2 -> bilek */
+/* RTOS kuyruklari: ISR bunlara yazar, gorevler bunlardan okur. */
+osMessageQueueId_t jawQueueHandle;    /* CH1 -> cene   */
+osMessageQueueId_t wristQueueHandle;  /* CH2 -> bilek  */
+osMessageQueueId_t elbowQueueHandle;  /* CH3 -> dirsek */
 
 /* LED gostergesi icin paylasilan durum: gorevler yazar, defaultTask okur.
  * Tek dahili yesil LED (PA5) kanallari yanis desenine gore ayirir. */
-volatile uint8_t ch1_active = 0;   /* CH1 cene  SQUEEZE mi */
-volatile uint8_t ch2_active = 0;   /* CH2 bilek SQUEEZE mi */
+volatile uint8_t ch1_active = 0;   /* CH1 cene   SQUEEZE mi */
+volatile uint8_t ch2_active = 0;   /* CH2 bilek  SQUEEZE mi */
+volatile uint8_t ch3_active = 0;   /* CH3 dirsek SQUEEZE mi */
 
 /* RTOS gorev handle'lari ve oznitelikleri */
 osThreadId_t jawTaskHandle;
 osThreadId_t wristTaskHandle;
+osThreadId_t elbowTaskHandle;
 const osThreadAttr_t jawTask_attributes = {
   .name = "JawTask",   .priority = (osPriority_t) osPriorityNormal, .stack_size = 128 * 4,
 };
 const osThreadAttr_t wristTask_attributes = {
   .name = "WristTask", .priority = (osPriority_t) osPriorityNormal, .stack_size = 128 * 4,
+};
+const osThreadAttr_t elbowTask_attributes = {
+  .name = "ElbowTask", .priority = (osPriority_t) osPriorityNormal, .stack_size = 128 * 4,
 };
 
 /* --- UART teshis sayaclari (Live Expressions ile izle) --- */
@@ -106,11 +115,11 @@ volatile uint32_t rx_byte_count  = 0;     /* gelen HER byte (cop dahil) */
 volatile uint32_t rx_frame_count = 0;     /* gecerli [AA..55] paket sayisi */
 volatile uint8_t  last_rx_byte   = 0;     /* en son gelen ham byte */
 
-typedef enum { WAIT_START, WAIT_DATA1, WAIT_DATA2, WAIT_END } RxState_t;
+typedef enum { WAIT_START, WAIT_DATA1, WAIT_DATA2, WAIT_DATA3, WAIT_END } RxState_t;
 static RxState_t rx_state = WAIT_START;
 
-/* Echo packet back to ESP32: [0xBB][ch1][ch2][0x66] */
-static uint8_t tx_packet[4] = {0xBB, 0x00, 0x00, 0x66};
+/* Echo packet back to ESP32: [0xBB][ch1][ch2][ch3][0x66] */
+static uint8_t tx_packet[5] = {0xBB, 0x00, 0x00, 0x00, 0x66};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -129,6 +138,7 @@ void StartDefaultTask(void *argument);
 /* USER CODE BEGIN PFP */
 void JawTask(void *argument);    /* govde USER CODE BEGIN 4'te */
 void WristTask(void *argument);
+void ElbowTask(void *argument);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -136,6 +146,8 @@ void WristTask(void *argument);
 /* PA0 = TIM2_CH1 -> cene (jaw),  PA6 = TIM3_CH1 -> bilek (wrist) */
 static inline void Jaw_Set(uint16_t us)   { __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, us); }
 static inline void Wrist_Set(uint16_t us) { __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, us); }
+/* PA11 = TIM4_CH1 -> dirsek (elbow) */
+static inline void Elbow_Set(uint16_t us) { __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, us); }
 
 /* Dereceyi (0..180) servo darbe genisligine (us) cevirir */
 static inline uint16_t Deg_To_Us(uint16_t deg)
@@ -183,11 +195,13 @@ int main(void)
   /* Start receiving 1 byte via interrupt from ESP32 on USART1 */
   HAL_UART_Receive_IT(&huart1, &rx_byte, 1);
 
-  /* Servo PWM kanallarini baslat (sadece gripper icin gerekenler) */
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);   /* PA0 - cene  */
-  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);   /* PA6 - bilek */
-  Jaw_Set(Deg_To_Us(JAW_REST_DEG));      /* baslangic: cene  REST  */
-  Wrist_Set(Deg_To_Us(WRIST_REST_DEG));  /* baslangic: bilek REST  */
+  /* Servo PWM kanallarini baslat */
+  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);   /* PA0  - cene   */
+  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);   /* PA6  - bilek  */
+  HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_1);   /* PA11 - dirsek */
+  Jaw_Set(Deg_To_Us(JAW_REST_DEG));        /* baslangic: cene   REST */
+  Wrist_Set(Deg_To_Us(WRIST_REST_DEG));    /* baslangic: bilek  REST */
+  Elbow_Set(Deg_To_Us(ELBOW_REST_DEG));    /* baslangic: dirsek REST */
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -206,8 +220,9 @@ int main(void)
   /* USER CODE END RTOS_TIMERS */
 
   /* USER CODE BEGIN RTOS_QUEUES */
-  jawQueueHandle   = osMessageQueueNew(8, sizeof(uint8_t), NULL);  /* CH1 -> cene  */
-  wristQueueHandle = osMessageQueueNew(8, sizeof(uint8_t), NULL);  /* CH2 -> bilek */
+  jawQueueHandle   = osMessageQueueNew(8, sizeof(uint8_t), NULL);  /* CH1 -> cene   */
+  wristQueueHandle = osMessageQueueNew(8, sizeof(uint8_t), NULL);  /* CH2 -> bilek  */
+  elbowQueueHandle = osMessageQueueNew(8, sizeof(uint8_t), NULL);  /* CH3 -> dirsek */
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
@@ -217,6 +232,7 @@ int main(void)
   /* USER CODE BEGIN RTOS_THREADS */
   jawTaskHandle   = osThreadNew(JawTask,   NULL, &jawTask_attributes);
   wristTaskHandle = osThreadNew(WristTask, NULL, &wristTask_attributes);
+  elbowTaskHandle = osThreadNew(ElbowTask, NULL, &elbowTask_attributes);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -793,24 +809,31 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
         break;
       case WAIT_DATA2:
         esp_pred_ch2 = rx_byte;
+        rx_state = WAIT_DATA3;
+        break;
+      case WAIT_DATA3:
+        esp_pred_ch3 = rx_byte;
         rx_state = WAIT_END;
         break;
       case WAIT_END:
         if (rx_byte == 0x55)
         {
           rx_frame_count++;
-          uint8_t c1 = esp_pred_ch1;   /* CH1 -> cene  */
-          uint8_t c2 = esp_pred_ch2;   /* CH2 -> bilek */
+          uint8_t c1 = esp_pred_ch1;   /* CH1 -> cene   */
+          uint8_t c2 = esp_pred_ch2;   /* CH2 -> bilek  */
+          uint8_t c3 = esp_pred_ch3;   /* CH3 -> dirsek */
 
-          /* Echo back to ESP32: [0xBB][ch1][ch2][0x66] (feedback dogrulama) */
+          /* Echo back to ESP32: [0xBB][ch1][ch2][ch3][0x66] (feedback dogrulama) */
           tx_packet[1] = c1;
           tx_packet[2] = c2;
-          HAL_UART_Transmit_IT(&huart1, tx_packet, 4);
+          tx_packet[3] = c3;
+          HAL_UART_Transmit_IT(&huart1, tx_packet, 5);
 
           /* Her kanali kendi gorevine ilet (ISR-safe: timeout 0).
            * Handle henuz olusmadiysa (scheduler baslamadan) atla. */
           if (jawQueueHandle   != NULL) osMessageQueuePut(jawQueueHandle,   &c1, 0U, 0U);
           if (wristQueueHandle != NULL) osMessageQueuePut(wristQueueHandle, &c2, 0U, 0U);
+          if (elbowQueueHandle != NULL) osMessageQueuePut(elbowQueueHandle, &c3, 0U, 0U);
         }
         rx_state = WAIT_START;
         break;
@@ -867,6 +890,13 @@ void WristTask(void *argument)
   (void)argument;
   Servo_Run(wristQueueHandle, &htim3,
             Deg_To_Us(WRIST_REST_DEG), Deg_To_Us(WRIST_SQUEEZE_DEG), &ch2_active);
+}
+
+void ElbowTask(void *argument)
+{
+  (void)argument;
+  Servo_Run(elbowQueueHandle, &htim4,
+            Deg_To_Us(ELBOW_REST_DEG), Deg_To_Us(ELBOW_SQUEEZE_DEG), &ch3_active);
 }
 
 /**
