@@ -39,9 +39,9 @@
 
 /* --- Aci ayarlari (DERECE cinsinden, soft-coded). Serbestce degistir. --- */
 #define JAW_REST_DEG      60U    /* cene  REST: yari acik baslangic (max'lamaz) */
-#define JAW_SQUEEZE_DEG   165U    /* cene  SQUEEZE: kapali konum */
-#define WRIST_REST_DEG     0U    /* bilek REST    konumu (0 derece)  */
-#define WRIST_SQUEEZE_DEG 90U    /* bilek SQUEEZE konumu (max 90 derece) */
+#define JAW_SQUEEZE_DEG   140U    /* cene  SQUEEZE: kapali konum */
+#define WRIST_REST_DEG     145U    /* bilek REST    konumu (0 derece)  */
+#define WRIST_SQUEEZE_DEG 20U    /* bilek SQUEEZE konumu (max 90 derece) */
 
 /* --- Yumusak hareket (slew-rate limiter) --- */
 #define SERVO_STEP_US     5U    /* her adimda kac us ilerlesin (kucuk = daha yumusak) */
