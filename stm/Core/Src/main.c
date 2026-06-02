@@ -42,8 +42,8 @@
 #define JAW_SQUEEZE_DEG   140U    /* cene  SQUEEZE: kapali konum */
 #define WRIST_REST_DEG     145U    /* bilek REST    konumu (0 derece)  */
 #define WRIST_SQUEEZE_DEG 20U    /* bilek SQUEEZE konumu (max 90 derece) */
-#define ELBOW_REST_DEG     0U    /* dirsek REST    konumu (CH3=biceps) */
-#define ELBOW_SQUEEZE_DEG 20U    /* dirsek SQUEEZE konumu (max 90 derece) */
+#define ELBOW_REST_DEG     60U    /* dirsek REST    konumu (CH3=biceps) */
+#define ELBOW_SQUEEZE_DEG 0U    /* dirsek SQUEEZE konumu (max 90 derece) */
 
 /* --- Yumusak hareket (slew-rate limiter) --- */
 #define SERVO_STEP_US     5U    /* her adimda kac us ilerlesin (kucuk = daha yumusak) */

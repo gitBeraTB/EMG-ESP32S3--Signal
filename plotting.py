@@ -4,7 +4,7 @@ import serial
 import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtCore import QTimer, Qt, QObject, QEvent
 import time
 import csv
 import re
@@ -92,29 +92,37 @@ start_time = time.time()
 # 3. GUI - Qt klavye event'leri
 # ==========================================
 class PlotWindow(pg.GraphicsLayoutWidget):
-    def keyPressEvent(self, event):
-        global current_label
-        if event.isAutoRepeat():
-            return
-        ch = event.text()
-        if ch in LABELS:
-            active_keys.add(ch)
-            current_label = LABELS[ch]
-        else:
-            super().keyPressEvent(event)
+    pass
 
-    def keyReleaseEvent(self, event):
+
+# Tuslari UYGULAMA GENELINDE yakala. GraphicsLayoutWidget bir QGraphicsView
+# oldugu icin odak alt bilesene (ViewBox) gecince keyPressEvent override'i
+# tetiklenmeyebiliyordu -> hep IDLE. Bu filtre, pencere on planda oldugu
+# surece hangi bilesenin odakta oldugundan bagimsiz calisir.
+class KeyFilter(QObject):
+    def eventFilter(self, obj, event):
         global current_label
-        if event.isAutoRepeat():
-            return
-        ch = event.text()
-        if ch in active_keys:
-            active_keys.discard(ch)
-            current_label = LABELS[next(iter(active_keys))] if active_keys else 0
-        else:
-            super().keyReleaseEvent(event)
+        et = event.type()
+        if et == QEvent.Type.KeyPress and not event.isAutoRepeat():
+            ch = event.text()
+            if ch in LABELS:
+                active_keys.add(ch)
+                current_label = LABELS[ch]
+                print(f"[TUS] {ch} -> {LABEL_NAMES[current_label]}")
+                return True
+        elif et == QEvent.Type.KeyRelease and not event.isAutoRepeat():
+            ch = event.text()
+            if ch in active_keys:
+                active_keys.discard(ch)
+                current_label = LABELS[next(iter(active_keys))] if active_keys else 0
+                print(f"[BIRAK] {ch} -> {LABEL_NAMES[current_label]}")
+                return True
+        return False
+
 
 app = QApplication(sys.argv)
+key_filter = KeyFilter()
+app.installEventFilter(key_filter)
 pg.setConfigOptions(antialias=False)   # cok nokta cizerken antialias yavaslatir
 
 win = PlotWindow(show=True, title="EMG + Etiketleme")
@@ -122,7 +130,14 @@ win.resize(1100, 500)
 win.setWindowTitle('EMG Bionic Hand - Etiketli Kayit (2CH)')
 win.setBackground('#0f172a')
 win.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+# Pencereyi one getir ve klavye odagini ZORLA al (terminalde input() sonrasi
+# odak terminalde kaldigi icin tuslar yakalanmiyordu -> hep IDLE).
+win.show()
+win.raise_()
+win.activateWindow()
 win.setFocus()
+# Olay dongusu basladiktan sonra odagi bir kez daha garantiye al.
+QTimer.singleShot(150, lambda: (win.raise_(), win.activateWindow(), win.setFocus()))
 
 p = win.addPlot()
 p.addLegend(offset=(10, 10))
@@ -160,21 +175,33 @@ counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0}
 last_drawn_label = -1
 serial_leftover = ''   # bir tick'te yarim kalan satir bir sonrakine tasinir
 
+# --- GECICI TESHIS: porttan ne geldigini 2 sn'de bir yazdir ---
+dbg_t0 = time.time()
+
 # ==========================================
 # 4. UPDATE
 # ==========================================
 def update():
-    global data_buffer, last_drawn_label, serial_leftover
+    global data_buffer, last_drawn_label, serial_leftover, dbg_t0
 
     # --- 1) Bekleyen tum baytlari TEK seferde oku ---
     n_waiting = ser.in_waiting
     if n_waiting == 0:
+        if time.time() - dbg_t0 > 2.0:
+            print("[DBG] in_waiting=0 -> porttan hic veri gelmiyor")
+            dbg_t0 = time.time()
         return
     chunk = ser.read(n_waiting).decode('utf-8', errors='ignore')
     serial_leftover += chunk
     lines = serial_leftover.split('\n')
     serial_leftover = lines[-1]      # son parca yarim olabilir
     lines = lines[:-1]
+
+    if time.time() - dbg_t0 > 2.0:
+        sample = next((l.strip() for l in lines if l.strip()), '')
+        n_col = len(sample.split(',')) if sample else 0
+        print(f"[DBG] gelen satir: '{sample}' -> {n_col} sutun (beklenen NUM_CH={NUM_CH})")
+        dbg_t0 = time.time()
 
     # --- 2) Bu tick'te gelen tum ornekleri biriktir ---
     new_samples = []
