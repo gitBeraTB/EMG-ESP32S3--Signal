@@ -31,8 +31,8 @@ void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
 //  MODE_COLLECT   : Veri toplama (Serial'e CSV formatinda 3 kanal basar)
 //  MODE_INFERENCE : Gercek zamanli tahmin
 // ================================================================
- #define MODE_COLLECT
-//#define MODE_INFERENCE
+// #define MODE_COLLECT
+#define MODE_INFERENCE
 
 #ifdef MODE_INFERENCE
 #include "model.h"

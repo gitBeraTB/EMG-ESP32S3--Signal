@@ -1,4 +1,5 @@
 import sys
+import os
 import serial
 import numpy as np
 import pyqtgraph as pg
@@ -6,6 +7,7 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QTimer, Qt
 import time
 import csv
+import re
 
 # ==========================================
 # 1. AYARLAR
@@ -13,7 +15,19 @@ import csv
 SERIAL_PORT = 'COM4'
 BAUD_RATE   = 921600       # main.cpp ile ayni
 MAX_POINTS  = 10000        # 5 sn @ 2 kHz (kasilmalari rahat gormek icin)
-OUTPUT_FILE = 'emg_kayit.csv'
+OUTPUT_DIR  = 'kayitlar'   # tum kayitlarin toplandigi klasor
+
+# ==========================================
+# 1b. KAYIT ADI (plot acilmadan once terminalden sorulur)
+# ==========================================
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+rec_name = input("Kayıt adı giriniz: ").strip()
+if not rec_name:
+    print("Hata: kayıt adı boş olamaz.")
+    sys.exit()
+# Dosya adi icin guvenli hale getir (bosluk -> _, gecersiz karakterleri temizle)
+safe_name = re.sub(r'[^0-9A-Za-z._-]', '_', rec_name.replace(' ', '_'))
+OUTPUT_FILE = os.path.join(OUTPUT_DIR, f"emg_kayit_{safe_name}.csv")
 
 # NOT: ESP32 MODE_COLLECT modunda olmali (main.cpp). Aksi halde CSV yerine
 # tahmin metni gelir ve hicbir satir ayrıştirilamaz.
